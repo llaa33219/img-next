@@ -146,16 +146,17 @@ export default {
           return new Response(object.body, { headers });
         }
         const codes = url.pathname.slice(1).split(",");
+        // 각 코드에 대해 메타데이터를 가져와 미디어 타입에 따라 렌더링
         const objects = await Promise.all(codes.map(async code => {
           const object = await env.IMAGES.get(code);
           return { code, object };
         }));
         let mediaTags = "";
-        for (const {code, object} of objects) {
+        for (const { code, object } of objects) {
           if (object && object.httpMetadata && object.httpMetadata.contentType && object.httpMetadata.contentType.startsWith('video/')) {
-            mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls style="max-width:40vw; max-height:50vh; margin: 10px; cursor: zoom-in; transition: transform 0.3s ease;" onclick="toggleZoom(this)"></video>\n`;
+            mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls onclick="toggleZoom(this)"></video>\n`;
           } else {
-            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Image" onclick="toggleZoom(this)">\n`;
+            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
           }
         }
         const htmlContent = `<!DOCTYPE html>
@@ -179,7 +180,7 @@ export default {
         justify-content: center;
         margin-bottom: 20px;
         font-size: 30px;
-        text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
       }
       .header-content img {
         margin-right: 20px;
@@ -194,25 +195,60 @@ export default {
       #imageContainer {
         width: 100%;
       }
-      /* 기본 이미지 스타일 (확대 안 한 상태) */
-      #imageContainer img {
+      /* 제공해주신 CSS 적용 */
+      /* 기존 스타일 유지 */
+      #imageContainer img,
+      #imageContainer video {
         width: 40vw;
         height: auto;
         max-width: 40vw;
         max-height: 50vh;
-        cursor: zoom-in;
-        margin: 10px;
+        display: block;
+        margin: 20px auto;
+        cursor: pointer;
         transition: all 0.3s ease;
+        object-fit: contain;
+        cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
       }
-      /* 확대 이미지 스타일: 가로 중앙 정렬, 세로 상단 정렬 */
-      #imageContainer img.expanded {
+    
+      /* 가로가 긴 경우 */
+      #imageContainer img.landscape,
+      #imageContainer video.landscape {
+        width: 40vw;
+        height: auto;
+        max-width: 40vw;
+        max-height: 50vh;
+        cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
+      }
+    
+      /* 세로가 긴 경우 */
+      #imageContainer img.portrait,
+      #imageContainer video.portrait {
+        width: auto;
+        height: 50vh;
+        max-width: 40vw;
+        max-height: 50vh;
+        cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
+      }
+    
+      /* 확대된 상태의 가로가 긴 경우 */
+      #imageContainer img.expanded.landscape,
+      #imageContainer video.expanded.landscape {
         width: 80vw;
         height: auto;
         max-width: 80vw;
         max-height: 100vh;
         cursor: zoom-out;
-        margin: 0 auto;
-        display: block;
+      }
+    
+      /* 확대된 상태의 세로가 긴 경우 */
+      #imageContainer img.expanded.portrait,
+      #imageContainer video.expanded.portrait {
+        width: auto;
+        height: 100vh;
+        max-width: 80vw;
+        max-height: 100vh;
+        cursor: zoom-out;
       }
     </style>
   </head>
