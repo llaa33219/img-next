@@ -263,6 +263,24 @@ export default {
     </div>
     <script>
       function toggleZoom(elem) {
+        // 만약 가로/세로 클래스가 부여되지 않았다면 자연 사이즈를 기준으로 추가
+        if (!elem.classList.contains('landscape') && !elem.classList.contains('portrait')) {
+          let width = 0, height = 0;
+          if (elem.tagName.toLowerCase() === 'img') {
+            width = elem.naturalWidth;
+            height = elem.naturalHeight;
+          } else if (elem.tagName.toLowerCase() === 'video') {
+            width = elem.videoWidth;
+            height = elem.videoHeight;
+          }
+          if (width && height) {
+            if (width >= height) {
+              elem.classList.add('landscape');
+            } else {
+              elem.classList.add('portrait');
+            }
+          }
+        }
         elem.classList.toggle('expanded');
       }
       document.getElementById('toggleButton').addEventListener('click', function(){
