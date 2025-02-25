@@ -29,7 +29,8 @@ export default {
               const sightResult = await sightResponse.json();
     
               let reasons = [];
-              if (sightResult.nudity && sightResult.nudity.is_nude === true) {
+              // 기존 is_nude 체크에 더해 nudity.raw 값도 확인하여 민감도를 높임
+              if (sightResult.nudity && (sightResult.nudity.is_nude === true || (sightResult.nudity.raw && sightResult.nudity.raw > 0.5))) {
                 reasons.push("선정적 콘텐츠");
               }
               if (sightResult.offensive && sightResult.offensive.prob > 0.5) {
@@ -147,13 +148,12 @@ export default {
         margin-left: 20px;
       }
       #imageContainer img {
-        max-width: 90vw;
-        max-height: 90vh;
+        width: 40vw;
+        max-width: 40vw;
+        max-height: 50vh;
         margin: 10px;
         cursor: zoom-in;
         transition: transform 0.3s ease;
-        width: auto;
-        height: auto;
       }
       #imageContainer img.expanded {
         transform: scale(2);
