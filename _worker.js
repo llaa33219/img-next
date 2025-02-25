@@ -3,7 +3,7 @@ export default {
       const url = new URL(request.url);
       console.log("Worker triggered:", request.method, url.pathname);
   
-      // 1) POST /upload -> 다중 업로드 처리
+      // POST /upload : 다중 파일 업로드 처리
       if (request.method === 'POST' && url.pathname === '/upload') {
         try {
           const formData = await request.formData();
@@ -11,15 +11,14 @@ export default {
           if (!files || files.length === 0) {
             return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
           }
-  
-          const codes = [];
-          // 선택된 모든 파일에 대해 처리
+          let codes = [];
+          // 각 파일 처리
           for (const file of files) {
-            // 이미지인 경우 Sightengine 검열
+            // 이미지인 경우 여러 모델로 검열 (선정적, 욕설/모욕, 잔인한 콘텐츠)
             if (file.type.startsWith('image/')) {
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
-              sightForm.append('models', 'nudity');
+              sightForm.append('models', 'nudity,wad,offensive');
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
@@ -28,13 +27,21 @@ export default {
                 body: sightForm
               });
               const sightResult = await sightResponse.json();
+              let reasons = [];
               if (sightResult.nudity && sightResult.nudity.is_nude === true) {
-                // 검열된 파일은 저장하지 않고 건너뜁니다.
-                continue;
+                reasons.push("선정적 콘텐츠");
+              }
+              if (sightResult.offensive && sightResult.offensive.prob > 0.5) {
+                reasons.push("욕설/모욕적 콘텐츠");
+              }
+              if (sightResult.wad && (sightResult.wad.weapon > 0.5 || sightResult.wad.alcohol > 0.5 || sightResult.wad.drugs > 0.5)) {
+                reasons.push("잔인하거나 위험한 콘텐츠");
+              }
+              if (reasons.length > 0) {
+                return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
             }
-  
-            // 8자리 랜덤 코드 생성
+            // 8자리 랜덤 코드 생성 함수
             const generateRandomCode = (length = 8) => {
               const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
               let result = '';
@@ -43,7 +50,6 @@ export default {
               }
               return result;
             };
-  
             let code;
             for (let i = 0; i < 5; i++) {
               code = generateRandomCode(8);
@@ -53,20 +59,15 @@ export default {
             if (!code) {
               return new Response(JSON.stringify({ success: false, error: '코드 생성 실패' }), { status: 500 });
             }
-  
+            // 파일 저장 (R2)
             const fileBuffer = await file.arrayBuffer();
             await env.IMAGES.put(code, fileBuffer, {
               httpMetadata: { contentType: file.type }
             });
             codes.push(code);
           }
-  
-          if (codes.length === 0) {
-            return new Response(JSON.stringify({ success: false, error: '업로드 가능한 파일이 없습니다.' }), { status: 400 });
-          }
-  
-          // 업로드된 URL: 여러 코드를 콤마로 구분
-          const urlCodes = codes.join(',');
+          // 코드들을 콤마로 구분하여 URL 생성
+          const urlCodes = codes.join(",");
           const imageUrl = `https://${url.host}/${urlCodes}`;
           return new Response(JSON.stringify({ success: true, url: imageUrl }), {
             headers: { 'Content-Type': 'application/json' }
@@ -75,125 +76,110 @@ export default {
           return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
         }
       }
-      // 2) GET /{코드 또는 다중 코드} -> 이미지 반환 또는 HTML 래퍼 페이지 제공
-      else if (request.method === 'GET' && /^\/[A-Za-z0-9,]+$/.test(url.pathname)) {
-        const codesStr = url.pathname.slice(1);
-        
-        // 다중 이미지: 코드에 쉼표가 포함된 경우
-        if (codesStr.includes(',')) {
-          const codes = codesStr.split(',').filter(c => c.length === 8);
-          // HTML 래퍼 페이지에서 각 이미지는 ?raw=1 URL을 사용해 원본을 요청
-          let imagesHtml = '';
-          for (const code of codes) {
-            const rawUrl = `https://${url.host}/${code}?raw=1`;
-            imagesHtml += `<img src="${rawUrl}" alt="Image ${code}" style="cursor: zoom-in; margin: 10px;">\n`;
-          }
-          const htmlContent = `<!DOCTYPE html>
-  <html lang="ko">
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>이미지 공유 - 다중 이미지</title>
-    <style>
-      body {
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        margin: 0;
-        padding: 20px;
-        background: #f0f0f0;
-      }
-      #imageContainer {
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        align-items: center;
-      }
-      #imageContainer img {
-        max-width: 40vw;
-        max-height: 50vh;
-        transition: transform 0.3s ease;
-      }
-      #imageContainer img.expanded {
-        transform: scale(2);
-        z-index: 1000;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="imageContainer">
-      ${imagesHtml}
-    </div>
-    <script>
-      document.querySelectorAll('#imageContainer img').forEach(img => {
-        img.addEventListener('click', () => {
-          img.classList.toggle('expanded');
-        });
-      });
-    </script>
-  </body>
-  </html>`;
-          return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
-        }
-        // 단일 코드 처리
-        else {
-          const code = codesStr;
+      // GET /{코드} : R2에서 파일 반환 또는 HTML 래퍼 페이지 제공 (다중 코드 지원)
+      else if (request.method === 'GET' && /^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname)) {
+        // 만약 URL에 ?raw=1 파라미터가 있으면 원본 이미지 반환
+        if (url.searchParams.get('raw') === '1') {
+          // 다중 코드 중 첫번째 코드에 대해 원본 이미지 반환 (일반적으로 <img> 태그에서는 단일 요청)
+          const code = url.pathname.slice(1).split(",")[0];
           const object = await env.IMAGES.get(code);
           if (!object) {
             return new Response('Not Found', { status: 404 });
           }
-          // query parameter "raw"가 있으면 원본 이미지 반환
-          if (url.searchParams.has('raw')) {
-            const headers = new Headers();
-            headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
-            return new Response(object.body, { headers });
-          }
-          // 기본: HTML 래퍼 페이지
-          const imageUrl = `https://${url.host}/${code}?raw=1`;
-          const htmlContent = `<!DOCTYPE html>
+          const headers = new Headers();
+          headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
+          return new Response(object.body, { headers });
+        }
+        // 브라우저에서 직접 접근한 경우 (Accept 헤더에 text/html 포함)
+        const codes = url.pathname.slice(1).split(",");
+        let imageTags = "";
+        for (const code of codes) {
+          // <img> 태그의 src에 ?raw=1를 추가하여 원본 이미지 요청
+          imageTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Image" onclick="toggleZoom(this)">\n`;
+        }
+        // HTML 래퍼 페이지 (헤더에 로고와 + 아이콘 추가, 확대 기능을 위한 간단한 스크립트 포함)
+        const htmlContent = `<!DOCTYPE html>
   <html lang="ko">
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="https://i.imgur.com/2MkyDCh.png" type="image/png">
     <title>이미지 공유</title>
     <style>
       body {
         display: flex;
         flex-direction: column;
-        justify-content: center;
         align-items: center;
         margin: 0;
         padding: 20px;
       }
+      .header-content {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        margin-bottom: 20px;
+      }
+      .header-content img {
+        width: 120px;
+        cursor: pointer;
+        margin-right: 20px;
+        border-radius: 14px;
+      }
+      .header-content h1 {
+        font-size: 30px;
+        margin: 0;
+      }
+      .toggle-button {
+        background-color: #28a745;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        cursor: pointer;
+        font-size: 24px;
+        margin-left: 20px;
+      }
       #imageContainer img {
+        width: 40vw;
         max-width: 40vw;
         max-height: 50vh;
+        margin: 10px;
         cursor: zoom-in;
         transition: transform 0.3s ease;
       }
       #imageContainer img.expanded {
         transform: scale(2);
-        z-index: 1000;
+        cursor: zoom-out;
       }
     </style>
   </head>
   <body>
+    <div class="header-content">
+      <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" onclick="location.href='https://bloupla.net/'">
+      <h1>이미지 공유</h1>
+      <button class="toggle-button" id="toggleButton">+</button>
+    </div>
     <div id="imageContainer">
-      <img src="${imageUrl}" alt="Uploaded Image">
+      ${imageTags}
     </div>
     <script>
-      document.querySelector('#imageContainer img').addEventListener('click', function() {
-        this.classList.toggle('expanded');
+      // 이미지 클릭 시 확대/축소 토글
+      function toggleZoom(img) {
+        img.classList.toggle('expanded');
+      }
+      // + 버튼 클릭 시 추가 기능(예: 새 업로드 페이지로 이동 등)을 구현할 수 있음
+      document.getElementById('toggleButton').addEventListener('click', function(){
+        window.location.href = '/';
       });
     </script>
   </body>
   </html>`;
-          return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
-        }
+        return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
       }
-      
-      // 3) 그 외의 요청은 정적 파일(ASSETS) 서빙
+  
+      // 그 외 요청은 정적 파일(ASSETS) 서빙
       return env.ASSETS.fetch(request);
     }
   };
