@@ -70,29 +70,18 @@ export default {
               }
             } else if (file.type.startsWith('video/')) {
               // 동영상 검열: 동영상은 리사이징 없이 원본 파일로 검열 처리
-              // 파일 크기 제한: 최대 50MB 이하의 파일만 허용
-              if (file.size > 50 * 1024 * 1024) {
-                return new Response(JSON.stringify({ success: false, error: '동영상 파일 용량이 너무 큽니다. 최대 50MB 이하의 파일을 업로드 해주세요.' }), { status: 400 });
-              }
-  
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
               sightForm.append('models', 'nudity,wad,offensive');
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
-              // 동영상 검열 시 검사할 프레임 수를 제한하여 안정적인 검열 처리 (예: 5프레임 검사)
-              sightForm.append('frames', '5');
-  
-              let sightResult = null;
-              try {
-                const sightResponse = await fetch('https://api.sightengine.com/1.0/check-video.json', {
-                  method: 'POST',
-                  body: sightForm
-                });
-                sightResult = await sightResponse.json();
-              } catch (err) {
-                return new Response(JSON.stringify({ success: false, error: "동영상 검열 실패: " + err.message }), { status: 500 });
-              }
+
+              // === 여기만 수정: check-video.json -> video/check-sync.json ===
+              const sightResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
+                method: 'POST',
+                body: sightForm
+              });
+              const sightResult = await sightResponse.json();
   
               let reasons = [];
               if (sightResult.nudity && (sightResult.nudity.is_nude === true || (sightResult.nudity.raw && sightResult.nudity.raw > 0.5))) {
@@ -278,7 +267,6 @@ export default {
       width: 40vw;
       height: auto;
       max-width: 40vw;
-      max-height: 50vh;
       cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
     }
 
@@ -288,7 +276,6 @@ export default {
       width: auto;
       height: 50vh;
       max-width: 40vw;
-      max-height: 50vh;
       cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
     }
   
@@ -455,13 +442,13 @@ export default {
       }
     }
     </style>
-        <!-- BLOUplayer 관련 -->
+    <!-- BLOUplayer 관련 -->
     <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
     <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
   </head>
   <body>
     <div class="header-content">
-<img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" style="width: 120px; height: auto; cursor: pointer;" onclick="location.href='/';">
+      <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" style="width: 120px; height: auto; cursor: pointer;" onclick="location.href='/';">
       <h1>이미지 공유</h1>
     </div>
     <div id="imageContainer">
