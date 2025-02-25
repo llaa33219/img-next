@@ -3,6 +3,17 @@ export default {
       const url = new URL(request.url);
       console.log("Worker triggered:", request.method, url.pathname);
   
+      // 헬퍼 함수: ArrayBuffer를 Base64 문자열로 변환
+      const arrayBufferToBase64 = (buffer) => {
+        let binary = '';
+        const bytes = new Uint8Array(buffer);
+        const len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+      };
+  
       // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행)
       if (request.method === 'POST' && url.pathname === '/upload') {
         try {
@@ -14,22 +25,37 @@ export default {
           // 1. 검열 단계: 모든 이미지 파일에 대해 검열 API 호출 (검열 통과 못하면 업로드 중단)
           for (const file of files) {
             if (file.type.startsWith('image/')) {
+              let fileForCensorship = file;
+              try {
+                // 이미지 리사이징: 최대 가로/세로 600px로 축소하여 검열 속도 향상
+                const buffer = await file.arrayBuffer();
+                const base64 = arrayBufferToBase64(buffer);
+                const dataUrl = `data:${file.type};base64,${base64}`;
+                const reqForResize = new Request(dataUrl, {
+                  cf: { image: { width: 600, height: 600, fit: "inside" } }
+                });
+                const resizedResponse = await fetch(reqForResize);
+                fileForCensorship = await resizedResponse.blob();
+              } catch (e) {
+                // 리사이징 실패 시 원본 파일 사용
+                fileForCensorship = file;
+              }
+  
               const sightForm = new FormData();
-              // 파일 스트림 소진 방지를 위해 file.slice()로 복제하여 사용
-              sightForm.append('media', file.slice(0, file.size, file.type), 'upload');
+              // 파일 스트림 소진 방지를 위해 fileForCensorship.slice()로 복제하여 사용
+              sightForm.append('media', fileForCensorship.slice(0, fileForCensorship.size, fileForCensorship.type), 'upload');
               // nudity, wad, offensive 모델을 사용하여 다양한 검열 수행
               sightForm.append('models', 'nudity,wad,offensive');
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
-    
+  
               const sightResponse = await fetch('https://api.sightengine.com/1.0/check.json', {
                 method: 'POST',
                 body: sightForm
               });
               const sightResult = await sightResponse.json();
-    
+  
               let reasons = [];
-              // 기존 is_nude 체크에 더해 nudity.raw 값도 확인하여 민감도를 높임
               if (sightResult.nudity && (sightResult.nudity.is_nude === true || (sightResult.nudity.raw && sightResult.nudity.raw > 0.5))) {
                 reasons.push("선정적 콘텐츠");
               }
@@ -45,7 +71,7 @@ export default {
               }
             }
           }
-    
+  
           // 2. 모든 파일이 검열 통과하면 업로드 진행 (각 파일 별로 R2에 저장)
           let codes = [];
           for (const file of files) {
