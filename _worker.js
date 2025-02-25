@@ -146,7 +146,6 @@ export default {
           return new Response(object.body, { headers });
         }
         const codes = url.pathname.slice(1).split(",");
-        // 각 코드에 대해 메타데이터를 가져와 미디어 타입에 따라 렌더링
         const objects = await Promise.all(codes.map(async code => {
           const object = await env.IMAGES.get(code);
           return { code, object };
@@ -154,9 +153,9 @@ export default {
         let mediaTags = "";
         for (const {code, object} of objects) {
           if (object && object.httpMetadata && object.httpMetadata.contentType && object.httpMetadata.contentType.startsWith('video/')) {
-            mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls style="object-fit:contain;" onclick="toggleZoom(this)"></video>\n`;
+            mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls style="max-width:40vw; max-height:50vh; margin: 10px; cursor: zoom-in; transition: transform 0.3s ease;" onclick="toggleZoom(this)"></video>\n`;
           } else {
-            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" style="object-fit:contain;" onclick="toggleZoom(this)">\n`;
+            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Image" onclick="toggleZoom(this)">\n`;
           }
         }
         const htmlContent = `<!DOCTYPE html>
@@ -173,7 +172,6 @@ export default {
         align-items: center;
         margin: 0;
         padding: 20px;
-        background: #f8f8f8;
       }
       .header-content {
         display: flex;
@@ -181,7 +179,7 @@ export default {
         justify-content: center;
         margin-bottom: 20px;
         font-size: 30px;
-        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+        text-shadow: 0 2px 4px rgba(0,0,0,0.5);
       }
       .header-content img {
         margin-right: 20px;
@@ -194,39 +192,27 @@ export default {
         margin: 0;
       }
       #imageContainer {
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: 10px;
-        padding: 10px;
+        width: 100%;
       }
-      #imageContainer img, #imageContainer video {
-        max-width: 300px;
-        max-height: 300px;
-        object-fit: contain;
+      /* 기본 이미지 스타일 (확대 안 한 상태) */
+      #imageContainer img {
+        width: 40vw;
+        height: auto;
+        max-width: 40vw;
+        max-height: 50vh;
         cursor: zoom-in;
-        transition: transform 0.3s ease;
+        margin: 10px;
+        transition: all 0.3s ease;
       }
-      #imageContainer img.expanded, #imageContainer video.expanded {
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%) scale(2);
-        z-index: 1000;
-        max-width: 90vw;
-        max-height: 90vh;
+      /* 확대 이미지 스타일: 가로 중앙 정렬, 세로 상단 정렬 */
+      #imageContainer img.expanded {
+        width: 80vw;
+        height: auto;
+        max-width: 80vw;
+        max-height: 100vh;
         cursor: zoom-out;
-      }
-      .toggle-button {
-        background-color: #28a745;
-        color: white;
-        border: none;
-        border-radius: 50%;
-        width: 40px;
-        height: 40px;
-        cursor: pointer;
-        font-size: 24px;
-        margin-left: 20px;
+        margin: 0 auto;
+        display: block;
       }
     </style>
   </head>
@@ -234,7 +220,7 @@ export default {
     <div class="header-content">
       <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" onclick="location.href='/'">
       <h1>이미지 공유</h1>
-      <button class="toggle-button" id="toggleButton">+</button>
+      <button class="toggle-button" id="toggleButton" style="background-color: #28a745; color: white; border: none; border-radius: 50%; width: 40px; height: 40px; cursor: pointer; font-size: 24px; margin-left: 20px;">+</button>
     </div>
     <div id="imageContainer">
       ${mediaTags}
