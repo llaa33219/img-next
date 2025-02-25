@@ -154,9 +154,9 @@ export default {
         let mediaTags = "";
         for (const {code, object} of objects) {
           if (object && object.httpMetadata && object.httpMetadata.contentType && object.httpMetadata.contentType.startsWith('video/')) {
-            mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls style="max-width:40vw; max-height:50vh; margin: 10px; cursor: zoom-in; transition: transform 0.3s ease;" onclick="toggleZoom(this)"></video>\n`;
+            mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls style="object-fit:contain;" onclick="toggleZoom(this)"></video>\n`;
           } else {
-            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Image" style="max-width:40vw; max-height:50vh; margin: 10px; cursor: zoom-in; transition: transform 0.3s ease;" onclick="toggleZoom(this)">\n`;
+            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" style="object-fit:contain;" onclick="toggleZoom(this)">\n`;
           }
         }
         const htmlContent = `<!DOCTYPE html>
@@ -173,6 +173,7 @@ export default {
         align-items: center;
         margin: 0;
         padding: 20px;
+        background: #f8f8f8;
       }
       .header-content {
         display: flex;
@@ -193,15 +194,39 @@ export default {
         margin: 0;
       }
       #imageContainer {
-        width: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+        padding: 10px;
       }
-      #imageContainer video, #imageContainer img {
+      #imageContainer img, #imageContainer video {
+        max-width: 300px;
+        max-height: 300px;
+        object-fit: contain;
         cursor: zoom-in;
         transition: transform 0.3s ease;
       }
-      #imageContainer video.expanded, #imageContainer img.expanded {
-        transform: scale(2);
+      #imageContainer img.expanded, #imageContainer video.expanded {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%) scale(2);
+        z-index: 1000;
+        max-width: 90vw;
+        max-height: 90vh;
         cursor: zoom-out;
+      }
+      .toggle-button {
+        background-color: #28a745;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        cursor: pointer;
+        font-size: 24px;
+        margin-left: 20px;
       }
     </style>
   </head>
@@ -209,7 +234,7 @@ export default {
     <div class="header-content">
       <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" onclick="location.href='/'">
       <h1>이미지 공유</h1>
-      <button class="toggle-button" id="toggleButton" style="background-color: #28a745; color: white; border: none; border-radius: 50%; width: 40px; height: 40px; cursor: pointer; font-size: 24px; margin-left: 20px;">+</button>
+      <button class="toggle-button" id="toggleButton">+</button>
     </div>
     <div id="imageContainer">
       ${mediaTags}
