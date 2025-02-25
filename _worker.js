@@ -449,9 +449,8 @@ export default {
   </head>
   <body>
     <div class="header-content">
-      <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" onclick="location.href='/'">
+<img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" style="width: 120px; height: auto; cursor: pointer;" onclick="location.href='/';">
       <h1>이미지 공유</h1>
-      <button class="toggle-button" id="toggleButton" style="background-color: #28a745; color: white; border: none; border-radius: 50%; width: 40px; height: 40px; cursor: pointer; font-size: 24px; margin-left: 20px;">+</button>
     </div>
     <div id="imageContainer">
       ${mediaTags}
