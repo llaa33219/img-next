@@ -158,8 +158,8 @@ export default {
               }
               const effectiveDuration = Math.min(duration, 30);
   
-              // Cloudflare Stream 업로드 (수정된 부분)
-              const streamUploadResponse = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream?direct_upload=true`, {
+              // Cloudflare Stream 업로드 (고객 하위 도메인 사용)
+              const streamUploadResponse = await fetch(`https://customer-8z0vdylu97ytcbll.cloudflarestream.com/?direct_upload=true`, {
                 method: 'POST',
                 headers: {
                   'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`,
