@@ -58,43 +58,24 @@ export default {
               const sightResult = await sightResponse.json();
   
               let reasons = [];
-              // ---- 검열 기준 강화 ----
-              if (sightResult.frames && Array.isArray(sightResult.frames)) {
-                for (const frame of sightResult.frames) {
-                  if (frame.nudity) {
-                    const { is_nude, raw, partial } = frame.nudity;
-                    if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
-                      if (!reasons.includes("선정적 콘텐츠")) reasons.push("선정적 콘텐츠");
-                    }
-                  }
-                  if (frame.offensive && frame.offensive.prob > 0.3) {
-                    if (!reasons.includes("욕설/모욕적 콘텐츠")) reasons.push("욕설/모욕적 콘텐츠");
-                  }
-                  if (frame.wad && (frame.wad.weapon > 0.3 || frame.wad.alcohol > 0.3 || frame.wad.drugs > 0.3)) {
-                    if (!reasons.includes("잔인하거나 위험한 콘텐츠")) reasons.push("잔인하거나 위험한 콘텐츠");
-                  }
-                }
-              } else {
-                if (sightResult.nudity) {
-                  const { is_nude, raw, partial } = sightResult.nudity;
-                  if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
-                    reasons.push("선정적 콘텐츠");
-                  }
-                }
-                if (sightResult.offensive && sightResult.offensive.prob > 0.3) {
-                  reasons.push("욕설/모욕적 콘텐츠");
-                }
-                if (sightResult.wad && (sightResult.wad.weapon > 0.3 || sightResult.wad.alcohol > 0.3 || sightResult.wad.drugs > 0.3)) {
-                  reasons.push("잔인하거나 위험한 콘텐츠");
+              if (sightResult.nudity) {
+                const { is_nude, raw, partial } = sightResult.nudity;
+                if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
+                  reasons.push("선정적 콘텐츠");
                 }
               }
-              // -----------------------
+              if (sightResult.offensive && sightResult.offensive.prob > 0.3) {
+                reasons.push("욕설/모욕적 콘텐츠");
+              }
+              if (sightResult.wad && (sightResult.wad.weapon > 0.3 || sightResult.wad.alcohol > 0.3 || sightResult.wad.drugs > 0.3)) {
+                reasons.push("잔인하거나 위험한 콘텐츠");
+              }
               if (reasons.length > 0) {
                 return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
             } else if (file.type.startsWith('video/')) {
               // -------------------------------------------
-              // 동영상 검열 (짧은/긴 분기) + 검열 기준 강화
+              // 동영상 검열 (짧은/긴 분기)
               // -------------------------------------------
               const MAX_SYNC_SIZE = 40 * 1024 * 1024; // 40MB 기준
               const sightForm = new FormData();
@@ -112,20 +93,19 @@ export default {
                 const sightResult = await sightResponse.json();
   
                 let reasons = [];
-                // ---- 검열 기준 강화 ----
-                if (sightResult.frames && Array.isArray(sightResult.frames)) {
+                if (sightResult.frames && Array.isArray(sightResult.frames) && sightResult.frames.length > 0) {
                   for (const frame of sightResult.frames) {
                     if (frame.nudity) {
                       const { is_nude, raw, partial } = frame.nudity;
                       if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
-                        if (!reasons.includes("선정적 콘텐츠")) reasons.push("선정적 콘텐츠");
+                        reasons.push("선정적 콘텐츠");
                       }
                     }
                     if (frame.offensive && frame.offensive.prob > 0.3) {
-                      if (!reasons.includes("욕설/모욕적 콘텐츠")) reasons.push("욕설/모욕적 콘텐츠");
+                      reasons.push("욕설/모욕적 콘텐츠");
                     }
                     if (frame.wad && (frame.wad.weapon > 0.3 || frame.wad.alcohol > 0.3 || frame.wad.drugs > 0.3)) {
-                      if (!reasons.includes("잔인하거나 위험한 콘텐츠")) reasons.push("잔인하거나 위험한 콘텐츠");
+                      reasons.push("잔인하거나 위험한 콘텐츠");
                     }
                   }
                 } else {
@@ -142,7 +122,6 @@ export default {
                     reasons.push("잔인하거나 위험한 콘텐츠");
                   }
                 }
-                // -----------------------
                 if (reasons.length > 0) {
                   return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
@@ -189,22 +168,20 @@ export default {
                   }
                 }
   
-                // pollResult가 최종 결과
                 let reasons = [];
-                // ---- 검열 기준 강화 ----
-                if (pollResult.frames && Array.isArray(pollResult.frames)) {
+                if (pollResult.frames && Array.isArray(pollResult.frames) && pollResult.frames.length > 0) {
                   for (const frame of pollResult.frames) {
                     if (frame.nudity) {
                       const { is_nude, raw, partial } = frame.nudity;
                       if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
-                        if (!reasons.includes("선정적 콘텐츠")) reasons.push("선정적 콘텐츠");
+                        reasons.push("선정적 콘텐츠");
                       }
                     }
                     if (frame.offensive && frame.offensive.prob > 0.3) {
-                      if (!reasons.includes("욕설/모욕적 콘텐츠")) reasons.push("욕설/모욕적 콘텐츠");
+                      reasons.push("욕설/모욕적 콘텐츠");
                     }
                     if (frame.wad && (frame.wad.weapon > 0.3 || frame.wad.alcohol > 0.3 || frame.wad.drugs > 0.3)) {
-                      if (!reasons.includes("잔인하거나 위험한 콘텐츠")) reasons.push("잔인하거나 위험한 콘텐츠");
+                      reasons.push("잔인하거나 위험한 콘텐츠");
                     }
                   }
                 } else {
@@ -221,7 +198,6 @@ export default {
                     reasons.push("잔인하거나 위험한 콘텐츠");
                   }
                 }
-                // -----------------------
                 if (reasons.length > 0) {
                   return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
@@ -390,7 +366,7 @@ export default {
       object-fit: contain;
       cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
     }
-
+  
     /* 가로가 긴 경우 */
     #imageContainer img.landscape,
     #imageContainer video.landscape {
@@ -399,7 +375,7 @@ export default {
       max-width: 40vw;
       cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
     }
-
+  
     /* 세로가 긴 경우 */
     #imageContainer img.portrait,
     #imageContainer video.portrait {
@@ -418,7 +394,7 @@ export default {
       max-height: 100vh;
       cursor: zoom-out;
     }
-
+  
     /* 확대된 상태의 세로가 긴 경우 */
     #imageContainer img.expanded.portrait,
     #imageContainer video.expanded.portrait {
@@ -514,7 +490,7 @@ export default {
       overflow: hidden; /* 메뉴 내에서 넘치는 부분 숨김 */
       box-sizing: border-box; /* 패딩과 보더를 포함한 크기 계산 */
     }
-
+  
     .custom-context-menu button {
       color: #000;
       background-color: #e7e7e7;
@@ -537,7 +513,7 @@ export default {
       /* 기본 transform 제거 */
       transform: none;
     }
-
+  
     .custom-context-menu button:hover {
       background-color: #9c9c9c;
       box-shadow: none;
@@ -545,15 +521,15 @@ export default {
       /* 호버 시 transform 제거 */
       transform: none;
     }
-
+  
     .title-img-desktop {
       display: block;
     }
-
+  
     .title-img-mobile {
       display: none;
     }
-
+  
     @media (max-width: 768px) {
       button {
         width: 300px;
