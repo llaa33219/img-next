@@ -119,7 +119,7 @@ export default {
               if (reasons.length > 0) {
                 return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
-            } else if (file.type.startsWith('video/')) {
+            } else if ((file.type && file.type.startsWith('video/')) || (file.name && file.name.toLowerCase().endsWith('.mp4'))) {
               // -------------------------------------------
               // 동영상 검열 (오직 동기 API 사용 및 1분 이상은 59초 단위로 분할)
               // -------------------------------------------
