@@ -1,6 +1,12 @@
 export default {
     async fetch(request, env, ctx) {
       const url = new URL(request.url);
+      // 디버깅: 들어온 요청의 기본 정보를 콘솔에 출력합니다.
+      console.log("Incoming Request:", {
+        method: request.method,
+        url: request.url,
+        headers: Object.fromEntries(request.headers)
+      });
       console.log("Worker triggered:", request.method, url.pathname);
   
       // 헬퍼 함수: ArrayBuffer를 Base64 문자열로 변환
