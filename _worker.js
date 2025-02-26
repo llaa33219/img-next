@@ -128,9 +128,9 @@ export default {
   
               // 2) 영상 길이(초) 확인 (mp4 파일 기준)
               let videoDuration = await getMP4Duration(file);
-              if (videoDuration === null) {
-                // duration 추출에 실패하면 전체 파일로 단일 검열 진행
-                videoDuration = 0;
+              // getMP4Duration 실패 시 전체 파일을 단일 검열 대상으로 처리
+              if (videoDuration === null || videoDuration <= 0) {
+                videoDuration = 59;
               }
   
               const videoThreshold = 0.5;
