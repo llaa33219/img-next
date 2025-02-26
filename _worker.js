@@ -59,7 +59,7 @@ export default {
           return null;
         }
       };
-
+  
       // 헬퍼 함수: Cloudflare Stream의 영상 처리가 완료될 때까지 polling
       const waitForStreamProcessing = async (videoId) => {
         const maxAttempts = 5;
@@ -158,18 +158,19 @@ export default {
               }
               const effectiveDuration = Math.min(duration, 30);
   
-              // Cloudflare Stream 업로드 (Content-Type 헤더 제거)
+              // Cloudflare Stream 업로드: file 객체 대신 ArrayBuffer로 변환하여 raw binary 데이터를 전송
+              const videoBuffer = await file.arrayBuffer();
               const streamUploadResponse = await fetch(
                 `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream?direct_user=true`,
                 {
                   method: 'POST',
                   headers: {
-                    'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`
+                    'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`,
+                    'Content-Type': 'application/octet-stream'
                   },
-                  body: file
+                  body: videoBuffer
                 }
               );
-              // 응답 전체 텍스트 파싱(에러 시 메시지 로깅을 위해)
               const streamUploadText = await streamUploadResponse.text();
               let streamUploadResult;
               try {
