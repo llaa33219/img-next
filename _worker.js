@@ -13,6 +13,52 @@ export default {
         }
         return btoa(binary);
       };
+
+      // 헬퍼 함수: MP4 파일에서 mvhd atom을 찾아 영상 길이(초)를 계산
+      const parseMp4Duration = (buffer) => {
+        try {
+          const view = new DataView(buffer);
+          const len = view.byteLength;
+          let pos = 0;
+          while (pos < len) {
+            if (pos + 8 > len) break;
+            const size = view.getUint32(pos);
+            let type = '';
+            for (let i = pos + 4; i < pos + 8; i++) {
+              type += String.fromCharCode(view.getUint8(i));
+            }
+            if (type === 'moov') {
+              const moovEnd = pos + size;
+              let innerPos = pos + 8;
+              while (innerPos < moovEnd) {
+                if (innerPos + 8 > len) break;
+                const innerSize = view.getUint32(innerPos);
+                let innerType = '';
+                for (let j = innerPos + 4; j < innerPos + 8; j++) {
+                  innerType += String.fromCharCode(view.getUint8(j));
+                }
+                if (innerType === 'mvhd') {
+                  const version = view.getUint8(innerPos + 8);
+                  if (version === 1) {
+                    const timescale = view.getUint32(innerPos + 20);
+                    const duration = Number(view.getBigUint64(innerPos + 24));
+                    return duration / timescale;
+                  } else {
+                    const timescale = view.getUint32(innerPos + 12);
+                    const duration = view.getUint32(innerPos + 16);
+                    return duration / timescale;
+                  }
+                }
+                innerPos += innerSize;
+              }
+            }
+            pos += size;
+          }
+          return null;
+        } catch (e) {
+          return null;
+        }
+      };
   
       // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행)
       if (request.method === 'POST' && url.pathname === '/upload') {
@@ -75,7 +121,7 @@ export default {
               }
             } else if (file.type.startsWith('video/')) {
               // -------------------------------------------
-              // 동영상 검열 (짧은/긴 분기)
+              // 동영상 검열 (영상 길이에 따라 분기)
               // -------------------------------------------
               // 영상 검열 API 응답은 "data.frames" 내에 값이 포함됨.
               // 문제 영상 판단 임계치를 0.5로 설정합니다.
@@ -86,8 +132,27 @@ export default {
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
-              if (file.size < 40 * 1024 * 1024) {
-                // 1) 비교적 작은(짧은) 영상: 동기 API
+              // 영상 길이 체크 (1분 미만이면 동기, 이상이면 비동기)
+              let isShort = false;
+              try {
+                const headerBuffer = await file.slice(0, 1024 * 1024).arrayBuffer();
+                let duration = null;
+                if (file.type === 'video/mp4' || (file.name && file.name.toLowerCase().endsWith('.mp4'))) {
+                  duration = parseMp4Duration(headerBuffer);
+                }
+                if (duration !== null && duration < 60) {
+                  isShort = true;
+                } else if (duration === null) {
+                  // 영상 길이 파싱에 실패하면 파일 크기를 fallback 기준으로 사용 (40MB 미만이면 짧은 영상)
+                  isShort = file.size < 40 * 1024 * 1024;
+                }
+              } catch (e) {
+                // 에러 발생 시에도 파일 크기를 fallback 기준으로 사용
+                isShort = file.size < 40 * 1024 * 1024;
+              }
+  
+              if (isShort) {
+                // 1) 비교적 짧은 영상: 동기 API
                 const sightResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                   method: 'POST',
                   body: sightForm
@@ -154,7 +219,7 @@ export default {
                 }
   
               } else {
-                // 2) 큰(길거나 용량 큰) 영상: 비동기 API + 폴링
+                // 2) 긴 영상: 비동기 API + 폴링
                 const initResponse = await fetch('https://api.sightengine.com/1.0/video/check.json', {
                   method: 'POST',
                   body: sightForm
