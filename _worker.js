@@ -113,7 +113,7 @@ export default {
               }
             } else if (file.type.startsWith('video/')) {
               // -------------------------------------------
-              // 동영상 검열 (오직 동기 API 사용 및 1분 이상은 59초 단위로 분할)
+              // 동영상 검열 (오직 동기 API 사용 – 1분 미만은 그대로, 1분 이상은 구간별로 처리)
               // -------------------------------------------
               // 1) 용량 체크: 50MB 초과면 경고
               if (file.size > 50 * 1024 * 1024) {
@@ -127,10 +127,9 @@ export default {
                 videoDuration = 0;
               }
   
-              const videoThreshold = 0.5;
-  
               if (videoDuration < 60) {
-                // 1분 미만이면 전체 파일을 한 번에 동기 API로 처리
+                // 1분 미만이면 전체 파일을 한 번에 동기 API로 처리 (건드리지 않음)
+                const videoThreshold = 0.5;
                 const sightForm = new FormData();
                 sightForm.append('media', file, 'upload');
                 sightForm.append('models', 'nudity,wad,offensive');
@@ -200,18 +199,27 @@ export default {
                   return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
               } else {
-                // 1분 이상이면 59초 단위로 분할하여 각각 동기 API 호출
-                const numSegments = Math.ceil(videoDuration / 59);
+                // 1분 이상인 경우: 영상의 비트레이트를 계산하여 구간별로 파일을 slice해서 검열 API에 전달
+                const videoThreshold = 0.5;
                 let reasons = [];
+                const bitrate = file.size / videoDuration;
+                let segments = [];
+                // 첫 구간: 0초부터 59초 (즉, 60초 분량)
+                segments.push({ start: 0, length: 60 });
+                let currentStart = 60;
+                // 이후 구간: 59초씩 분할
+                while (currentStart < videoDuration) {
+                  segments.push({ start: currentStart, length: Math.min(59, videoDuration - currentStart) });
+                  currentStart += 59;
+                }
   
-                for (let i = 0; i < numSegments; i++) {
-                  const segmentStartTime = i * 59;
-                  const segmentDuration = (i === numSegments - 1) ? videoDuration - segmentStartTime : 59;
+                for (const seg of segments) {
+                  const startByte = Math.floor(seg.start * bitrate);
+                  const endByte = Math.floor((seg.start + seg.length) * bitrate);
+                  const segmentBlob = file.slice(startByte, endByte, file.type);
+  
                   const segmentForm = new FormData();
-                  // 전체 파일을 전송하고, 'start'와 'length' 필드로 분할 구간 지정
-                  segmentForm.append('media', file, 'upload');
-                  segmentForm.append('start', segmentStartTime);
-                  segmentForm.append('length', segmentDuration);
+                  segmentForm.append('media', segmentBlob, 'upload');
                   segmentForm.append('models', 'nudity,wad,offensive');
                   segmentForm.append('api_user', env.SIGHTENGINE_API_USER);
                   segmentForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
