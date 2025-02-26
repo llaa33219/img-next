@@ -66,8 +66,11 @@ export default {
           if (!files || files.length === 0) {
             return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
           }
-          // 1. 검열 단계: 모든 파일에 대해 검열 API 호출 (검열 통과 못하면 업로드 중단)
+  
+          // 각 파일에 대해 처리 시작 로그 추가
           for (const file of files) {
+            console.log("처리 중인 파일:", file.name, "타입:", file.type, "크기:", file.size);
+  
             if (file.type.startsWith('image/')) {
               // -------------------------------------------
               // 이미지 검열
@@ -138,7 +141,6 @@ export default {
               const videoThreshold = 0.5;
   
               if (videoDuration < 60) {
-                // 1분 미만이면 전체 파일을 한 번에 동기 API로 처리
                 console.log("동영상(1분 미만) 검열 API 요청 시작:", file.name, "duration:", videoDuration);
                 const sightForm = new FormData();
                 sightForm.append('media', file, 'upload');
@@ -304,7 +306,7 @@ export default {
             }
           }
   
-          // 2. 모든 파일이 검열 통과하면 업로드 진행 (각 파일 별로 R2에 저장)
+          // 업로드 진행: 모든 파일이 검열 통과하면 각 파일을 R2에 저장
           let codes = [];
           for (const file of files) {
             const generateRandomCode = (length = 8) => {
@@ -352,7 +354,6 @@ export default {
           return new Response(object.body, { headers });
         }
         const codes = url.pathname.slice(1).split(",");
-        // 각 코드에 대해 메타데이터를 가져와 미디어 타입에 따라 렌더링
         const objects = await Promise.all(codes.map(async code => {
           const object = await env.IMAGES.get(code);
           return { code, object };
@@ -373,198 +374,33 @@ export default {
     <link rel="icon" href="https://i.imgur.com/2MkyDCh.png" type="image/png">
     <title>이미지 공유</title>
     <style>
-      body {
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-start;
-        align-items: center;
-        height: 100vh;
-        margin: 0;
-        padding: 20px;
-        overflow: auto;
-      }
-    
-      .upload-container {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-      }
-    
-      button {
-        background-color: #007BFF;
-        color: white;
-        border: none;
-        border-radius: 20px;
-        padding: 10px 20px;
-        margin: 20px 0;
-        width: 600px;
-        height: 61px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
-        cursor: pointer;
-        transition: background-color 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease;
-        font-weight: bold;
-        font-size: 18px;
-        text-align: center;
-      }
-    
-      button:hover {
-        background-color: #005BDD;
-        transform: translateY(2px);
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-      }
-    
-      button:active {
-        background-color: #0026a3;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-      }
-    
-      #fileNameDisplay {
-        font-size: 16px;
-        margin-top: 10px;
-        color: #333;
-      }
-    
-      #linkBox {
-        width: 500px;
-        height: 40px;
-        margin: 20px 0;
-        font-size: 16px;
-        padding: 10px;
-        text-align: center;
-        border-radius: 14px;
-      }
-    
-      .copy-button {
-        background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center;
-        background-size: contain;
-        border: none;
-        cursor: pointer;
-        width: 60px;
-        height: 40px;
-        margin-left: 10px;
-        vertical-align: middle;
-      }
-    
-      .link-container {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-      }
-      
-      /* 기존 스타일 유지 */
-      #imageContainer img,
-      #imageContainer video {
-        width: 40vw;
-        height: auto;
-        max-width: 40vw;
-        max-height: 50vh;
-        display: block;
-        margin: 20px auto;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        object-fit: contain;
-        cursor: zoom-in;
-      }
-    
-      /* 가로가 긴 경우 */
-      #imageContainer img.landscape,
-      #imageContainer video.landscape {
-        width: 40vw;
-        height: auto;
-        max-width: 40vw;
-        cursor: zoom-in;
-      }
-    
-      /* 세로가 긴 경우 */
-      #imageContainer img.portrait,
-      #imageContainer video.portrait {
-        width: auto;
-        height: 50vh;
-        max-width: 40vw;
-        cursor: zoom-in;
-      }
-    
-      /* 확대된 상태의 가로가 긴 경우 */
-      #imageContainer img.expanded.landscape,
-      #imageContainer video.expanded.landscape {
-        width: 80vw;
-        height: auto;
-        max-width: 80vw;
-        max-height: 100vh;
-        cursor: zoom-out;
-      }
-    
-      /* 확대된 상태의 세로가 긴 경우 */
-      #imageContainer img.expanded.portrait,
-      #imageContainer video.expanded.portrait {
-        width: auto;
-        height: 100vh;
-        max-width: 80vw;
-        max-height: 100vh;
-        cursor: zoom-out;
-      }
-    
-      .container {
-        text-align: center;
-      }
-    
-      .header-content {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin-bottom: 20px;
-        font-size: 30px;
-        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-      }
-    
-      .header-content img {
-        margin-right: 20px;
-        border-radius: 14px;
-      }
-    
-      .toggle-button {
-        background-color: #28a745;
-        color: white;
-        border: none;
-        border-radius: 50%;
-        width: 40px;
-        height: 40px;
-        display: none;
-        justify-content: center;
-        align-items: center;
-        cursor: pointer;
-        font-size: 24px;
-        margin-left: 20px;
-      }
-    
-      .hidden {
-        display: none;
-      }
-    
-      .title-img-desktop {
-        display: block;
-      }
-    
-      .title-img-mobile {
-        display: none;
-      }
-    
+      body { display: flex; flex-direction: column; justify-content: flex-start; align-items: center; height: 100vh; margin: 0; padding: 20px; overflow: auto; }
+      .upload-container { display: flex; flex-direction: column; align-items: center; }
+      button { background-color: #007BFF; color: white; border: none; border-radius: 20px; padding: 10px 20px; margin: 20px 0; width: 600px; height: 61px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2); cursor: pointer; transition: background-color 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease; font-weight: bold; font-size: 18px; text-align: center; }
+      button:hover { background-color: #005BDD; transform: translateY(2px); box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); }
+      button:active { background-color: #0026a3; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); }
+      #fileNameDisplay { font-size: 16px; margin-top: 10px; color: #333; }
+      #linkBox { width: 500px; height: 40px; margin: 20px 0; font-size: 16px; padding: 10px; text-align: center; border-radius: 14px; }
+      .copy-button { background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center; background-size: contain; border: none; cursor: pointer; width: 60px; height: 40px; margin-left: 10px; vertical-align: middle; }
+      .link-container { display: flex; justify-content: center; align-items: center; }
+      #imageContainer img, #imageContainer video { width: 40vw; height: auto; max-width: 40vw; max-height: 50vh; display: block; margin: 20px auto; cursor: pointer; transition: all 0.3s ease; object-fit: contain; cursor: zoom-in; }
+      #imageContainer img.landscape, #imageContainer video.landscape { width: 40vw; height: auto; max-width: 40vw; cursor: zoom-in; }
+      #imageContainer img.portrait, #imageContainer video.portrait { width: auto; height: 50vh; max-width: 40vw; cursor: zoom-in; }
+      #imageContainer img.expanded.landscape, #imageContainer video.expanded.landscape { width: 80vw; height: auto; max-width: 80vw; max-height: 100vh; cursor: zoom-out; }
+      #imageContainer img.expanded.portrait, #imageContainer video.expanded.portrait { width: auto; height: 100vh; max-width: 80vw; max-height: 100vh; cursor: zoom-out; }
+      .container { text-align: center; }
+      .header-content { display: flex; align-items: center; justify-content: center; margin-bottom: 20px; font-size: 30px; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5); }
+      .header-content img { margin-right: 20px; border-radius: 14px; }
+      .toggle-button { background-color: #28a745; color: white; border: none; border-radius: 50%; width: 40px; height: 40px; display: none; justify-content: center; align-items: center; cursor: pointer; font-size: 24px; margin-left: 20px; }
+      .hidden { display: none; }
+      .title-img-desktop { display: block; }
+      .title-img-mobile { display: none; }
       @media (max-width: 768px) {
-        button {
-          width: 300px;
-        }
-        #linkBox {
-          width: 200px;
-        }
-        .header-content {
-          font-size: 23px;
-        }
-        .title-img-desktop {
-          display: none;
-        }
-        .title-img-mobile {
-          display: block;
-        }
+        button { width: 300px; }
+        #linkBox { width: 200px; }
+        .header-content { font-size: 23px; }
+        .title-img-desktop { display: none; }
+        .title-img-mobile { display: block; }
       }
     </style>
     <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
