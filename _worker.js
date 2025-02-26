@@ -59,7 +59,7 @@ export default {
           return null;
         }
       };
-  
+
       // 헬퍼 함수: Cloudflare Stream의 영상 처리가 완료될 때까지 polling
       const waitForStreamProcessing = async (videoId) => {
         const maxAttempts = 5;
@@ -158,30 +158,18 @@ export default {
               }
               const effectiveDuration = Math.min(duration, 30);
   
-              // Cloudflare Stream 업로드: File 객체에서 새로운 Response(file).body를 사용하여 raw binary 스트림 전송
-              const videoStream = new Response(file).body;
-              const streamUploadResponse = await fetch(
-                `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream?direct_user=true`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`
-                  },
-                  body: videoStream
-                }
-              );
-              const streamUploadText = await streamUploadResponse.text();
-              let streamUploadResult;
-              try {
-                streamUploadResult = JSON.parse(streamUploadText);
-              } catch (e) {
-                throw new Error(`Cloudflare Stream 업로드 실패 - JSON 파싱 오류: ${streamUploadText}`);
-              }
-  
+              // Cloudflare Stream 업로드
+              const streamUploadResponse = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream?direct_user=true`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`
+                },
+                body: file
+              });
+              const streamUploadResult = await streamUploadResponse.json();
               if (!streamUploadResponse.ok || !streamUploadResult.result || !streamUploadResult.result.uid) {
-                throw new Error(`Cloudflare Stream 업로드 실패 - 응답: ${streamUploadText}`);
+                throw new Error("Cloudflare Stream 업로드 실패");
               }
-  
               const videoId = streamUploadResult.result.uid;
   
               // Cloudflare Stream의 영상 처리 완료 대기
