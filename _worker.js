@@ -13,16 +13,6 @@ export default {
         }
         return btoa(binary);
       };
-
-      // 헬퍼 함수: 응답을 안전하게 JSON으로 파싱 (JSON이 아니면 에러 발생)
-      const safeJson = async (response) => {
-        const contentType = response.headers.get("Content-Type") || "";
-        if (!contentType.includes("application/json")) {
-          const text = await response.text();
-          throw new Error(`검열 API 응답이 JSON이 아님: ${text}`);
-        }
-        return response.json();
-      };
   
       // 헬퍼 함수: MP4 파일에서 mvhd atom을 찾아 영상 길이(초)를 계산
       const parseMp4Duration = (buffer) => {
@@ -69,19 +59,6 @@ export default {
           return null;
         }
       };
-
-      // 헬퍼 함수: 영상 파일에서 프레임 추출 (실제 구현은 환경에 따라 다를 수 있음, 여기서는 예시로 첫 프레임을 복제)
-      const extractFrames = async (file, frameCount) => {
-        // 실제 환경에서는 영상 디코딩을 통해 서로 다른 시간대의 프레임을 추출해야 합니다.
-        // Cloudflare Workers에서는 이 기능이 기본 지원되지 않으므로, 외부 API 호출 등을 고려해야 합니다.
-        // 아래는 예시로, 파일의 첫 번째 프레임을 frameCount 만큼 반환하는 더미 구현입니다.
-        const frame = file;
-        let frames = [];
-        for (let i = 0; i < frameCount; i++) {
-          frames.push(frame);
-        }
-        return frames;
-      };
   
       // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행)
       if (request.method === 'POST' && url.pathname === '/upload') {
@@ -124,7 +101,7 @@ export default {
                 method: 'POST',
                 body: sightForm
               });
-              const sightResult = await safeJson(sightResponse);
+              const sightResult = await sightResponse.json();
   
               let reasons = [];
               if (sightResult.nudity) {
@@ -144,66 +121,115 @@ export default {
               }
             } else if (file.type.startsWith('video/')) {
               // -------------------------------------------
-              // 동영상 검열: 영상에서 20개 프레임을 추출하여 이미지 검열 API로 처리
+              // 영상 검열: 영상 검열 API를 제거하고 이미지 검열 API로 대체
+              // 영상에서 동일한 간격으로 프레임 20개를 추출하여 병렬 처리 후,
+              // 각 프레임의 결과 중 최대값을 검사합니다.
               // -------------------------------------------
               const videoThreshold = 0.5;
-              // 영상에서 20개 프레임 추출 (동일한 간격으로 추출되어야 하나, 여기서는 더미 구현)
-              const frames = await extractFrames(file, 20);
-  
-              // 20개 프레임을 병렬 처리로 이미지 검열 API에 요청
-              const censorshipPromises = frames.map(frame => (async () => {
-                let frameForCensorship = frame;
-                try {
-                  const buffer = await frame.arrayBuffer();
-                  const base64 = arrayBufferToBase64(buffer);
-                  const dataUrl = `data:${frame.type};base64,${base64}`;
-                  const reqForResize = new Request(dataUrl, {
-                    cf: { image: { width: 600, height: 600, fit: "inside" } }
-                  });
-                  const resizedResponse = await fetch(reqForResize);
-                  frameForCensorship = await resizedResponse.blob();
-                } catch (e) {
-                  frameForCensorship = frame;
+              // 영상 길이 확인 (MP4인 경우 mvhd atom 파싱)
+              let duration = null;
+              try {
+                const headerBuffer = await file.slice(0, 1024 * 1024).arrayBuffer();
+                if (file.type === 'video/mp4' || (file.name && file.name.toLowerCase().endsWith('.mp4'))) {
+                  duration = parseMp4Duration(headerBuffer);
                 }
-                const frameForm = new FormData();
-                frameForm.append('media', frameForCensorship.slice(0, frameForCensorship.size, frameForCensorship.type), 'upload');
-                frameForm.append('models', 'nudity,wad,offensive');
-                frameForm.append('api_user', env.SIGHTENGINE_API_USER);
-                frameForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
+              } catch (e) {
+                duration = null;
+              }
+              if (duration === null || duration <= 0) {
+                duration = 1; // fallback 값
+              }
   
-                const frameResponse = await fetch('https://api.sightengine.com/1.0/check.json', {
-                  method: 'POST',
-                  body: frameForm
+              // 영상 전체를 base64 data URL로 변환 (썸네일 추출용)
+              const videoBuffer = await file.arrayBuffer();
+              const videoBase64 = arrayBufferToBase64(videoBuffer);
+              const videoDataUrl = `data:${file.type};base64,${videoBase64}`;
+  
+              const frameCount = 20;
+              const framePromises = [];
+              for (let i = 0; i < frameCount; i++) {
+                const timestamp = (i / (frameCount - 1)) * duration;
+                // Cloudflare의 video thumbnail 기능을 가정합니다.
+                const reqForThumbnail = new Request(videoDataUrl, {
+                  cf: { video: { thumbnail: true, time: timestamp, width: 600, height: 600, fit: "inside" } }
                 });
-                return await safeJson(frameResponse);
-              })());
+                framePromises.push(fetch(reqForThumbnail).then(res => res.blob()));
+              }
   
-              const results = await Promise.all(censorshipPromises);
+              let frameBlobs;
+              try {
+                frameBlobs = await Promise.all(framePromises);
+              } catch (e) {
+                return new Response(JSON.stringify({ success: false, error: "영상 프레임 추출 실패" }), { status: 400 });
+              }
   
-              let reasonsSet = new Set();
-              for (const result of results) {
+              // 추출된 각 프레임에 대해 이미지 검열 API 병렬 호출
+              const censorshipPromises = frameBlobs.map(frameBlob => {
+                const sightForm = new FormData();
+                sightForm.append('media', frameBlob.slice(0, frameBlob.size, frameBlob.type), 'upload');
+                sightForm.append('models', 'nudity,wad,offensive');
+                sightForm.append('api_user', env.SIGHTENGINE_API_USER);
+                sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
+                return fetch('https://api.sightengine.com/1.0/check.json', {
+                  method: 'POST',
+                  body: sightForm
+                }).then(res => res.json());
+              });
+  
+              let frameResults;
+              try {
+                frameResults = await Promise.all(censorshipPromises);
+              } catch (e) {
+                return new Response(JSON.stringify({ success: false, error: "검열 API 요청 실패" }), { status: 400 });
+              }
+  
+              // 20개 프레임 결과 중 각 카테고리(선정성, 욕설, 위험)의 최대값을 계산
+              let maxNudity = 0;
+              let nudityFlag = false;
+              let maxOffensive = 0;
+              let maxWad = 0;
+              for (const result of frameResults) {
                 if (result.nudity) {
-                  for (const key in result.nudity) {
-                    if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                    if (Number(result.nudity[key]) >= videoThreshold) {
-                      reasonsSet.add("선정적 콘텐츠");
+                  const nudityData = result.nudity;
+                  if (nudityData.is_nude === true) {
+                    nudityFlag = true;
+                  }
+                  for (const key in nudityData) {
+                    if (["suggestive_classes", "context", "none", "is_nude"].includes(key)) continue;
+                    const val = Number(nudityData[key]);
+                    if (val > maxNudity) {
+                      maxNudity = val;
                     }
                   }
                 }
-                if (result.offensive && result.offensive.prob !== undefined && Number(result.offensive.prob) >= videoThreshold) {
-                  reasonsSet.add("욕설/모욕적 콘텐츠");
+                if (result.offensive && result.offensive.prob !== undefined) {
+                  const val = Number(result.offensive.prob);
+                  if (val > maxOffensive) {
+                    maxOffensive = val;
+                  }
                 }
                 if (result.wad) {
                   for (const key in result.wad) {
-                    if (Number(result.wad[key]) >= videoThreshold) {
-                      reasonsSet.add("잔인하거나 위험한 콘텐츠");
+                    const val = Number(result.wad[key]);
+                    if (val > maxWad) {
+                      maxWad = val;
                     }
                   }
                 }
               }
   
-              if (reasonsSet.size > 0) {
-                return new Response(JSON.stringify({ success: false, error: "검열됨: " + Array.from(reasonsSet).join(", ") }), { status: 400 });
+              let reasons = [];
+              if (nudityFlag || maxNudity >= videoThreshold) {
+                reasons.push("선정적 콘텐츠");
+              }
+              if (maxOffensive >= videoThreshold) {
+                reasons.push("욕설/모욕적 콘텐츠");
+              }
+              if (maxWad >= videoThreshold) {
+                reasons.push("잔인하거나 위험한 콘텐츠");
+              }
+              if (reasons.length > 0) {
+                return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
             }
           }
