@@ -94,7 +94,7 @@ export default {
               // 이미지 검열
               let fileForCensorship = file;
               try {
-                // 600px 리사이징
+                // 600px 리사이징하여 검열 속도 향상
                 const buffer = await file.arrayBuffer();
                 const base64 = arrayBufferToBase64(buffer);
                 const dataUrl = `data:${file.type};base64,${base64}`;
@@ -106,6 +106,7 @@ export default {
               } catch (e) {
                 fileForCensorship = file;
               }
+  
               const sightForm = new FormData();
               sightForm.append('media', fileForCensorship.slice(0, fileForCensorship.size, fileForCensorship.type), 'upload');
               sightForm.append('models', 'nudity,wad,offensive');
@@ -117,6 +118,7 @@ export default {
                 body: sightForm
               });
               const sightResult = await sightResponse.json();
+  
               let reasons = [];
               if (sightResult.nudity) {
                 const { is_nude, raw, partial } = sightResult.nudity;
@@ -145,7 +147,7 @@ export default {
                 duration = null;
               }
               if (duration === null || duration <= 0) {
-                duration = 1; // fallback
+                duration = 1; // fallback 값
               }
               const effectiveDuration = Math.min(duration, 30);
   
@@ -176,12 +178,9 @@ export default {
               const uploadURL = initResult.result.uploadURL;
               const videoId = initResult.result.uid;
   
-              // ② 업로드 URL에 대해 PUT 방식으로 바이너리 전송
+              // ② PUT 방식으로 바이너리 파일 전송 (PUT 시 Content-Type 헤더 제거)
               const fileUploadResponse = await fetch(uploadURL, {
                 method: 'PUT',
-                headers: {
-                  'Content-Type': file.type
-                },
                 body: file
               });
               if (!fileUploadResponse.ok) {
@@ -214,7 +213,7 @@ export default {
                 return new Response(JSON.stringify({ success: false, error: "영상 프레임 추출 실패: " + e.message }), { status: 400 });
               }
   
-              // ⑤ 추출된 프레임들에 대해 이미지 검열 API 병렬 호출
+              // ⑤ 추출된 프레임에 대해 이미지 검열 API 병렬 호출
               const censorshipPromises = frameBlobs.map(frameBlob => {
                 const sightForm = new FormData();
                 sightForm.append('media', frameBlob.slice(0, frameBlob.size, frameBlob.type), 'upload');
@@ -292,7 +291,7 @@ export default {
             }
           }
   
-          // 2. 검열 통과한 파일들을 R2에 저장 (이미지와 영상 모두 원본 그대로 저장)
+          // 2. 모든 파일 검열 통과 시, 원본 파일을 R2에 저장 (이미지와 영상 모두)
           let codes = [];
           const generateRandomCode = (length = 8) => {
             const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
