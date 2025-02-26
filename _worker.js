@@ -1,6 +1,7 @@
 export default {
     async fetch(request, env, ctx) {
       const url = new URL(request.url);
+      // 디버깅: 들어온 요청의 기본 정보를 콘솔에 출력합니다.
       console.log("Incoming Request:", {
         method: request.method,
         url: request.url,
@@ -26,29 +27,23 @@ export default {
           const dv = new DataView(buffer);
           const uint8 = new Uint8Array(buffer);
           // mvhd 문자열의 아스키 코드: m=109, v=118, h=104, d=100
-          for (let i = 4; i < uint8.length - 4; i++) {
+          for (let i = 0; i < uint8.length - 4; i++) {
             if (uint8[i] === 109 && uint8[i + 1] === 118 && uint8[i + 2] === 104 && uint8[i + 3] === 100) {
               const boxStart = i - 4; // mvhd 박스는 size(4) + type(4)로 시작
-              const boxSize = dv.getUint32(boxStart);
-              const type = String.fromCharCode(
-                uint8[boxStart + 4],
-                uint8[boxStart + 5],
-                uint8[boxStart + 6],
-                uint8[boxStart + 7]
-              );
-              if (type === "mvhd") {
-                const version = dv.getUint8(boxStart + 8);
-                if (version === 0) {
-                  const timescale = dv.getUint32(boxStart + 12);
-                  const duration = dv.getUint32(boxStart + 16);
-                  return duration / timescale;
-                } else if (version === 1) {
-                  const timescale = dv.getUint32(boxStart + 20);
-                  const high = dv.getUint32(boxStart + 24);
-                  const low = dv.getUint32(boxStart + 28);
-                  const duration = high * Math.pow(2, 32) + low;
-                  return duration / timescale;
-                }
+              // 버전과 flags는 boxStart+8 ~ boxStart+11
+              const version = dv.getUint8(boxStart + 8);
+              if (version === 0) {
+                // version 0: header = 4(size)+4(type)+1(version)+3(flags)+4(creation)+4(modification)+4(timescale)+4(duration)
+                const timescale = dv.getUint32(boxStart + 20);
+                const duration = dv.getUint32(boxStart + 24);
+                return duration / timescale;
+              } else if (version === 1) {
+                // version 1: header = 4+4+1+3+8(creation)+8(modification)+4(timescale)+8(duration)
+                const timescale = dv.getUint32(boxStart + 28);
+                const high = dv.getUint32(boxStart + 32);
+                const low = dv.getUint32(boxStart + 36);
+                const duration = high * Math.pow(2, 32) + low;
+                return duration / timescale;
               }
             }
           }
@@ -66,11 +61,8 @@ export default {
           if (!files || files.length === 0) {
             return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
           }
-  
-          // 각 파일에 대해 처리 시작 로그 추가
+          // 1. 검열 단계: 모든 파일에 대해 검열 API 호출 (검열 통과 못하면 업로드 중단)
           for (const file of files) {
-            console.log("처리 중인 파일:", file.name, "타입:", file.type, "크기:", file.size);
-  
             if (file.type.startsWith('image/')) {
               // -------------------------------------------
               // 이미지 검열
@@ -98,13 +90,11 @@ export default {
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
-              console.log("이미지 검열 API 요청 시작:", file.name);
               const sightResponse = await fetch('https://api.sightengine.com/1.0/check.json', {
                 method: 'POST',
                 body: sightForm
               });
               const sightResult = await sightResponse.json();
-              console.log("이미지 검열 API 응답:", sightResult);
   
               let reasons = [];
               if (sightResult.nudity) {
@@ -122,7 +112,7 @@ export default {
               if (reasons.length > 0) {
                 return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
-            } else if ((file.type && file.type.startsWith('video/')) || (file.name && file.name.toLowerCase().endsWith('.mp4'))) {
+            } else if (file.type.startsWith('video/')) {
               // -------------------------------------------
               // 동영상 검열 (오직 동기 API 사용 및 1분 이상은 59초 단위로 분할)
               // -------------------------------------------
@@ -133,15 +123,15 @@ export default {
   
               // 2) 영상 길이(초) 확인 (mp4 파일 기준)
               let videoDuration = await getMP4Duration(file);
-              // getMP4Duration 실패 시 전체 파일을 단일 검열 대상으로 처리
-              if (videoDuration === null || videoDuration <= 0) {
-                videoDuration = 59;
+              if (videoDuration === null) {
+                // duration 추출에 실패하면 단일 검열로 진행
+                videoDuration = 0;
               }
   
               const videoThreshold = 0.5;
   
               if (videoDuration < 60) {
-                console.log("동영상(1분 미만) 검열 API 요청 시작:", file.name, "duration:", videoDuration);
+                // 1분 미만이면 전체 파일을 한 번에 동기 API로 처리
                 const sightForm = new FormData();
                 sightForm.append('media', file, 'upload');
                 sightForm.append('models', 'nudity,wad,offensive');
@@ -152,9 +142,7 @@ export default {
                   method: 'POST',
                   body: sightForm
                 });
-                console.log("동영상(1분 미만) 검열 API 응답:", sightResponse.status);
                 const sightResult = await sightResponse.json();
-                console.log("동영상(1분 미만) 검열 결과:", sightResult);
   
                 let reasons = [];
                 let frames = [];
@@ -216,7 +204,6 @@ export default {
                 // 1분 이상이면 59초 단위로 분할하여 각각 동기 API 호출
                 const numSegments = Math.ceil(videoDuration / 59);
                 const totalSize = file.size;
-                console.log("동영상(1분 이상) 검열 분할 시작:", file.name, "duration:", videoDuration, "segments:", numSegments);
                 let reasons = [];
   
                 for (let i = 0; i < numSegments; i++) {
@@ -224,11 +211,7 @@ export default {
                   const segmentEndTime = Math.min((i + 1) * 59, videoDuration);
                   // 파일 전체 duration 대비 비율로 바이트 범위를 계산 (상수 비트레이트 가정)
                   const startByte = Math.floor((segmentStartTime / videoDuration) * totalSize);
-                  let endByte = Math.ceil((segmentEndTime / videoDuration) * totalSize);
-                  if (endByte <= startByte) {
-                    endByte = startByte + 1;
-                  }
-                  console.log("동영상 세그먼트 검열 요청:", file.name, "세그먼트:", i, "startByte:", startByte, "endByte:", endByte);
+                  const endByte = Math.floor((segmentEndTime / videoDuration) * totalSize);
                   const segmentBlob = file.slice(startByte, endByte, file.type);
   
                   const segmentForm = new FormData();
@@ -241,9 +224,7 @@ export default {
                     method: 'POST',
                     body: segmentForm
                   });
-                  console.log("세그먼트", i, "검열 API 응답 상태:", segmentResponse.status);
                   const segmentResult = await segmentResponse.json();
-                  console.log("세그먼트", i, "검열 결과:", segmentResult);
   
                   let frames = [];
                   if (segmentResult.data && segmentResult.data.frames) {
@@ -306,7 +287,7 @@ export default {
             }
           }
   
-          // 업로드 진행: 모든 파일이 검열 통과하면 각 파일을 R2에 저장
+          // 2. 모든 파일이 검열 통과하면 업로드 진행 (각 파일 별로 R2에 저장)
           let codes = [];
           for (const file of files) {
             const generateRandomCode = (length = 8) => {
@@ -354,6 +335,7 @@ export default {
           return new Response(object.body, { headers });
         }
         const codes = url.pathname.slice(1).split(",");
+        // 각 코드에 대해 메타데이터를 가져와 미디어 타입에 따라 렌더링
         const objects = await Promise.all(codes.map(async code => {
           const object = await env.IMAGES.get(code);
           return { code, object };
@@ -374,33 +356,198 @@ export default {
     <link rel="icon" href="https://i.imgur.com/2MkyDCh.png" type="image/png">
     <title>이미지 공유</title>
     <style>
-      body { display: flex; flex-direction: column; justify-content: flex-start; align-items: center; height: 100vh; margin: 0; padding: 20px; overflow: auto; }
-      .upload-container { display: flex; flex-direction: column; align-items: center; }
-      button { background-color: #007BFF; color: white; border: none; border-radius: 20px; padding: 10px 20px; margin: 20px 0; width: 600px; height: 61px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2); cursor: pointer; transition: background-color 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease; font-weight: bold; font-size: 18px; text-align: center; }
-      button:hover { background-color: #005BDD; transform: translateY(2px); box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); }
-      button:active { background-color: #0026a3; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); }
-      #fileNameDisplay { font-size: 16px; margin-top: 10px; color: #333; }
-      #linkBox { width: 500px; height: 40px; margin: 20px 0; font-size: 16px; padding: 10px; text-align: center; border-radius: 14px; }
-      .copy-button { background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center; background-size: contain; border: none; cursor: pointer; width: 60px; height: 40px; margin-left: 10px; vertical-align: middle; }
-      .link-container { display: flex; justify-content: center; align-items: center; }
-      #imageContainer img, #imageContainer video { width: 40vw; height: auto; max-width: 40vw; max-height: 50vh; display: block; margin: 20px auto; cursor: pointer; transition: all 0.3s ease; object-fit: contain; cursor: zoom-in; }
-      #imageContainer img.landscape, #imageContainer video.landscape { width: 40vw; height: auto; max-width: 40vw; cursor: zoom-in; }
-      #imageContainer img.portrait, #imageContainer video.portrait { width: auto; height: 50vh; max-width: 40vw; cursor: zoom-in; }
-      #imageContainer img.expanded.landscape, #imageContainer video.expanded.landscape { width: 80vw; height: auto; max-width: 80vw; max-height: 100vh; cursor: zoom-out; }
-      #imageContainer img.expanded.portrait, #imageContainer video.expanded.portrait { width: auto; height: 100vh; max-width: 80vw; max-height: 100vh; cursor: zoom-out; }
-      .container { text-align: center; }
-      .header-content { display: flex; align-items: center; justify-content: center; margin-bottom: 20px; font-size: 30px; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5); }
-      .header-content img { margin-right: 20px; border-radius: 14px; }
-      .toggle-button { background-color: #28a745; color: white; border: none; border-radius: 50%; width: 40px; height: 40px; display: none; justify-content: center; align-items: center; cursor: pointer; font-size: 24px; margin-left: 20px; }
-      .hidden { display: none; }
-      .title-img-desktop { display: block; }
-      .title-img-mobile { display: none; }
+      body {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: center;
+        height: 100vh;
+        margin: 0;
+        padding: 20px;
+        overflow: auto;
+      }
+    
+      .upload-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+    
+      button {
+        background-color: #007BFF;
+        color: white;
+        border: none;
+        border-radius: 20px;
+        padding: 10px 20px;
+        margin: 20px 0;
+        width: 600px;
+        height: 61px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+        cursor: pointer;
+        transition: background-color 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease;
+        font-weight: bold;
+        font-size: 18px;
+        text-align: center;
+      }
+    
+      button:hover {
+        background-color: #005BDD;
+        transform: translateY(2px);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      }
+    
+      button:active {
+        background-color: #0026a3;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      }
+    
+      #fileNameDisplay {
+        font-size: 16px;
+        margin-top: 10px;
+        color: #333;
+      }
+    
+      #linkBox {
+        width: 500px;
+        height: 40px;
+        margin: 20px 0;
+        font-size: 16px;
+        padding: 10px;
+        text-align: center;
+        border-radius: 14px;
+      }
+    
+      .copy-button {
+        background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center;
+        background-size: contain;
+        border: none;
+        cursor: pointer;
+        width: 60px;
+        height: 40px;
+        margin-left: 10px;
+        vertical-align: middle;
+      }
+    
+      .link-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+      
+      /* 기존 스타일 유지 */
+      #imageContainer img,
+      #imageContainer video {
+        width: 40vw;
+        height: auto;
+        max-width: 40vw;
+        max-height: 50vh;
+        display: block;
+        margin: 20px auto;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        object-fit: contain;
+        cursor: zoom-in;
+      }
+    
+      /* 가로가 긴 경우 */
+      #imageContainer img.landscape,
+      #imageContainer video.landscape {
+        width: 40vw;
+        height: auto;
+        max-width: 40vw;
+        cursor: zoom-in;
+      }
+    
+      /* 세로가 긴 경우 */
+      #imageContainer img.portrait,
+      #imageContainer video.portrait {
+        width: auto;
+        height: 50vh;
+        max-width: 40vw;
+        cursor: zoom-in;
+      }
+    
+      /* 확대된 상태의 가로가 긴 경우 */
+      #imageContainer img.expanded.landscape,
+      #imageContainer video.expanded.landscape {
+        width: 80vw;
+        height: auto;
+        max-width: 80vw;
+        max-height: 100vh;
+        cursor: zoom-out;
+      }
+    
+      /* 확대된 상태의 세로가 긴 경우 */
+      #imageContainer img.expanded.portrait,
+      #imageContainer video.expanded.portrait {
+        width: auto;
+        height: 100vh;
+        max-width: 80vw;
+        max-height: 100vh;
+        cursor: zoom-out;
+      }
+    
+      .container {
+        text-align: center;
+      }
+    
+      .header-content {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 20px;
+        font-size: 30px;
+        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+      }
+    
+      .header-content img {
+        margin-right: 20px;
+        border-radius: 14px;
+      }
+    
+      .toggle-button {
+        background-color: #28a745;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        display: none;
+        justify-content: center;
+        align-items: center;
+        cursor: pointer;
+        font-size: 24px;
+        margin-left: 20px;
+      }
+    
+      .hidden {
+        display: none;
+      }
+    
+      .title-img-desktop {
+        display: block;
+      }
+    
+      .title-img-mobile {
+        display: none;
+      }
+    
       @media (max-width: 768px) {
-        button { width: 300px; }
-        #linkBox { width: 200px; }
-        .header-content { font-size: 23px; }
-        .title-img-desktop { display: none; }
-        .title-img-mobile { display: block; }
+        button {
+          width: 300px;
+        }
+        #linkBox {
+          width: 200px;
+        }
+        .header-content {
+          font-size: 23px;
+        }
+        .title-img-desktop {
+          display: none;
+        }
+        .title-img-mobile {
+          display: block;
+        }
       }
     </style>
     <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
