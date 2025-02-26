@@ -77,8 +77,9 @@ export default {
               // -------------------------------------------
               // 동영상 검열 (짧은/긴 분기)
               // -------------------------------------------
-              // 응답 구조가 달라졌으므로, data.frames를 우선 확인
-              const threshold = 0.05;
+              // 영상 검열 API 응답은 "data.frames" 내에 값이 포함됨.
+              // 문제 영상 판단 임계치를 0.5로 설정합니다.
+              const videoThreshold = 0.5;
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
               sightForm.append('models', 'nudity,wad,offensive');
@@ -104,20 +105,21 @@ export default {
                 if (frames.length > 0) {
                   for (const frame of frames) {
                     if (frame.nudity) {
+                      // "suggestive_classes", "context", "none" 제외하고 각 값이 임계치 이상이면 문제로 판단
                       for (const key in frame.nudity) {
-                        if (["suggestive_classes", "context"].includes(key)) continue;
-                        if (Number(frame.nudity[key]) > threshold) {
+                        if (["suggestive_classes", "context", "none"].includes(key)) continue;
+                        if (Number(frame.nudity[key]) >= videoThreshold) {
                           reasons.push("선정적 콘텐츠");
                           break;
                         }
                       }
                     }
-                    if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) > threshold) {
+                    if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= videoThreshold) {
                       reasons.push("욕설/모욕적 콘텐츠");
                     }
                     if (frame.wad) {
                       for (const key in frame.wad) {
-                        if (Number(frame.wad[key]) > threshold) {
+                        if (Number(frame.wad[key]) >= videoThreshold) {
                           reasons.push("잔인하거나 위험한 콘텐츠");
                           break;
                         }
@@ -128,19 +130,19 @@ export default {
                   // frames가 없으면 단일 객체 검사
                   if (sightResult.data && sightResult.data.nudity) {
                     for (const key in sightResult.data.nudity) {
-                      if (["suggestive_classes", "context"].includes(key)) continue;
-                      if (Number(sightResult.data.nudity[key]) > threshold) {
+                      if (["suggestive_classes", "context", "none"].includes(key)) continue;
+                      if (Number(sightResult.data.nudity[key]) >= videoThreshold) {
                         reasons.push("선정적 콘텐츠");
                         break;
                       }
                     }
                   }
-                  if (sightResult.data && sightResult.data.offensive && sightResult.data.offensive.prob !== undefined && Number(sightResult.data.offensive.prob) > threshold) {
+                  if (sightResult.data && sightResult.data.offensive && sightResult.data.offensive.prob !== undefined && Number(sightResult.data.offensive.prob) >= videoThreshold) {
                     reasons.push("욕설/모욕적 콘텐츠");
                   }
                   if (sightResult.data && sightResult.data.wad) {
                     for (const key in sightResult.data.wad) {
-                      if (Number(sightResult.data.wad[key]) > threshold) {
+                      if (Number(sightResult.data.wad[key]) >= videoThreshold) {
                         reasons.push("잔인하거나 위험한 콘텐츠");
                         break;
                       }
@@ -204,19 +206,19 @@ export default {
                   for (const frame of frames) {
                     if (frame.nudity) {
                       for (const key in frame.nudity) {
-                        if (["suggestive_classes", "context"].includes(key)) continue;
-                        if (Number(frame.nudity[key]) > threshold) {
+                        if (["suggestive_classes", "context", "none"].includes(key)) continue;
+                        if (Number(frame.nudity[key]) >= videoThreshold) {
                           reasons.push("선정적 콘텐츠");
                           break;
                         }
                       }
                     }
-                    if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) > threshold) {
+                    if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= videoThreshold) {
                       reasons.push("욕설/모욕적 콘텐츠");
                     }
                     if (frame.wad) {
                       for (const key in frame.wad) {
-                        if (Number(frame.wad[key]) > threshold) {
+                        if (Number(frame.wad[key]) >= videoThreshold) {
                           reasons.push("잔인하거나 위험한 콘텐츠");
                           break;
                         }
@@ -226,19 +228,19 @@ export default {
                 } else {
                   if (pollResult.data && pollResult.data.nudity) {
                     for (const key in pollResult.data.nudity) {
-                      if (["suggestive_classes", "context"].includes(key)) continue;
-                      if (Number(pollResult.data.nudity[key]) > threshold) {
+                      if (["suggestive_classes", "context", "none"].includes(key)) continue;
+                      if (Number(pollResult.data.nudity[key]) >= videoThreshold) {
                         reasons.push("선정적 콘텐츠");
                         break;
                       }
                     }
                   }
-                  if (pollResult.data && pollResult.data.offensive && pollResult.data.offensive.prob !== undefined && Number(pollResult.data.offensive.prob) > threshold) {
+                  if (pollResult.data && pollResult.data.offensive && pollResult.data.offensive.prob !== undefined && Number(pollResult.data.offensive.prob) >= videoThreshold) {
                     reasons.push("욕설/모욕적 콘텐츠");
                   }
                   if (pollResult.data && pollResult.data.wad) {
                     for (const key in pollResult.data.wad) {
-                      if (Number(pollResult.data.wad[key]) > threshold) {
+                      if (Number(pollResult.data.wad[key]) >= videoThreshold) {
                         reasons.push("잔인하거나 위험한 콘텐츠");
                         break;
                       }
@@ -314,7 +316,7 @@ export default {
           }
         }
         const htmlContent = `<!DOCTYPE html>
-  <html lang="ko">
+<html lang="ko">
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -322,280 +324,198 @@ export default {
     <title>이미지 공유</title>
     <style>
       body {
-      display: flex;
-      flex-direction: column;
-      justify-content: flex-start;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-      padding: 20px;
-      overflow: auto;
-    }
-  
-    .upload-container {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-  
-    button {
-      background-color: #007BFF;
-      color: white;
-      border: none;
-      border-radius: 20px;
-      padding: 10px 20px;
-      margin: 20px 0;
-      width: 600px;
-      height: 61px;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
-      cursor: pointer;
-      transition: background-color 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease;
-      font-weight: bold;
-      font-size: 18px;
-      text-align: center;
-    }
-  
-    button:hover {
-      background-color: #005BDD;
-      transform: translateY(2px);
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    }
-  
-    button:active {
-      background-color: #0026a3;
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    }
-  
-    #fileNameDisplay {
-      font-size: 16px;
-      margin-top: 10px;
-      color: #333;
-    }
-  
-    #linkBox {
-      width: 500px;
-      height: 40px;
-      margin: 20px 0;
-      font-size: 16px;
-      padding: 10px;
-      text-align: center;
-      border-radius: 14px;
-    }
-  
-    .copy-button {
-      background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center;
-      background-size: contain;
-      border: none;
-      cursor: pointer;
-      width: 60px;
-      height: 40px;
-      margin-left: 10px;
-      vertical-align: middle;
-    }
-  
-    .link-container {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-    }
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: center;
+        height: 100vh;
+        margin: 0;
+        padding: 20px;
+        overflow: auto;
+      }
     
-    /* 기존 스타일 유지 */
-    #imageContainer img,
-    #imageContainer video {
-      width: 40vw;
-      height: auto;
-      max-width: 40vw;
-      max-height: 50vh;
-      display: block;
-      margin: 20px auto;
-      cursor: pointer;
-      transition: all 0.3s ease;
-      object-fit: contain;
-      cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
-    }
-
-    /* 가로가 긴 경우 */
-    #imageContainer img.landscape,
-    #imageContainer video.landscape {
-      width: 40vw;
-      height: auto;
-      max-width: 40vw;
-      max-height: 50vh;
-      cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
-    }
-
-    /* 세로가 긴 경우 */
-    #imageContainer img.portrait,
-    #imageContainer video.portrait {
-      width: auto;
-      height: 50vh;
-      max-width: 40vw;
-      max-height: 50vh;
-      cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
-    }
-  
-    /* 확대된 상태의 가로가 긴 경우 */
-    #imageContainer img.expanded.landscape,
-    #imageContainer video.expanded.landscape {
-      width: 80vw;
-      height: auto;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
-    }
-
-    /* 확대된 상태의 세로가 긴 경우 */
-    #imageContainer img.expanded.portrait,
-    #imageContainer video.expanded.portrait {
-      width: auto;
-      height: 100vh;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
-    }
-  
-    .container {
-      text-align: center;
-    }
-  
-    .header-content {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 20px;
-      font-size: 30px;
-      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-    }
-  
-    .header-content img {
-      margin-right: 20px;
-      border-radius: 14px;
-    }
-  
-    .toggle-button {
-      background-color: #28a745;
-      color: white;
-      border: none;
-      border-radius: 50%;
-      width: 40px;
-      height: 40px;
-      display: none;
-      justify-content: center;
-      align-items: center;
-      cursor: pointer;
-      font-size: 24px;
-      margin-left: 20px;
-    }
-  
-    .hidden {
-      display: none;
-    }
-  
-    /* 수정된 검열된 이미지 스타일 */
-    .censored {
-      position: relative;
-      display: inline-block;
-      /* 이미지 자체는 숨기고 오버레이로만 표시 */
-      width: 100%;
-      height: 100%;
-    }
-  
-    .censored img,
-    .censored video {
-      display: none; /* 미디어 숨김 */
-    }
-  
-    .censored .overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background-color: rgba(0, 0, 0, 0.8); /* 검열 배경 */
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      color: white;
-      font-size: 24px;
-      font-weight: bold;
-      text-shadow: 2px 2px 4px #000;
-      pointer-events: none;
-    }
-  
-    /* 사용자 정의 컨텍스트 메뉴 스타일 수정 */
-    .custom-context-menu {
-      color: #000; /* 텍스트 색상을 검정으로 설정 */
-      position: absolute;
-      background-color: #e0e0e0;
-      z-index: 1000;
-      width: 150px;
-      display: none; /* 기본적으로 숨김 */
-      flex-direction: column;
-      border-radius: 8px; /* 컨텍스트 메뉴의 모서리를 둥글게 설정 */
-      box-shadow: none; /* 그림자 제거 */
-      padding: 0; /* 내부 여백 제거 */
-      
-      /* 추가된 스타일 */
-      overflow: hidden; /* 메뉴 내에서 넘치는 부분 숨김 */
-      box-sizing: border-box; /* 패딩과 보더를 포함한 크기 계산 */
-    }
-
-    .custom-context-menu button {
-      color: #000;
-      background-color: #e7e7e7;
-      text-align: left;
-      width: 100%;
-      cursor: pointer;
-      font-size: 16px; /* 글자 크기 유지 */
-      padding: 6px 10px; /* 버튼 세로 길이 조정 */
-      margin: 0; /* 버튼 간 공간 제거 */
-      border: none; /* 기본 테두리 제거 */
-      border-radius: 0; /* 모서리 둥글지 않게 설정 */
-      box-shadow: none; /* 그림자 제거 */
-      
-      /* 추가된 스타일 */
-      box-sizing: border-box; /* 패딩과 보더를 포함한 크기 계산 */
-      
-      /* Transition 재정의: transform을 제외하고 background-color와 box-shadow만 포함 */
-      transition: background-color 0.3s ease, box-shadow 0.3s ease;
-      
-      /* 기본 transform 제거 */
-      transform: none;
-    }
-
-    .custom-context-menu button:hover {
-      background-color: #9c9c9c;
-      box-shadow: none;
-      
-      /* 호버 시 transform 제거 */
-      transform: none;
-    }
-
-    .title-img-desktop {
-      display: block;
-    }
-
-    .title-img-mobile {
-      display: none;
-    }
-
-    @media (max-width: 768px) {
+      .upload-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+    
       button {
-        width: 300px;
+        background-color: #007BFF;
+        color: white;
+        border: none;
+        border-radius: 20px;
+        padding: 10px 20px;
+        margin: 20px 0;
+        width: 600px;
+        height: 61px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+        cursor: pointer;
+        transition: background-color 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease;
+        font-weight: bold;
+        font-size: 18px;
+        text-align: center;
       }
+    
+      button:hover {
+        background-color: #005BDD;
+        transform: translateY(2px);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      }
+    
+      button:active {
+        background-color: #0026a3;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      }
+    
+      #fileNameDisplay {
+        font-size: 16px;
+        margin-top: 10px;
+        color: #333;
+      }
+    
       #linkBox {
-        width: 200px;
+        width: 500px;
+        height: 40px;
+        margin: 20px 0;
+        font-size: 16px;
+        padding: 10px;
+        text-align: center;
+        border-radius: 14px;
       }
+    
+      .copy-button {
+        background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center;
+        background-size: contain;
+        border: none;
+        cursor: pointer;
+        width: 60px;
+        height: 40px;
+        margin-left: 10px;
+        vertical-align: middle;
+      }
+    
+      .link-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+      
+      /* 기존 스타일 유지 */
+      #imageContainer img,
+      #imageContainer video {
+        width: 40vw;
+        height: auto;
+        max-width: 40vw;
+        max-height: 50vh;
+        display: block;
+        margin: 20px auto;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        object-fit: contain;
+        cursor: zoom-in;
+      }
+    
+      /* 가로가 긴 경우 */
+      #imageContainer img.landscape,
+      #imageContainer video.landscape {
+        width: 40vw;
+        height: auto;
+        max-width: 40vw;
+        cursor: zoom-in;
+      }
+    
+      /* 세로가 긴 경우 */
+      #imageContainer img.portrait,
+      #imageContainer video.portrait {
+        width: auto;
+        height: 50vh;
+        max-width: 40vw;
+        cursor: zoom-in;
+      }
+    
+      /* 확대된 상태의 가로가 긴 경우 */
+      #imageContainer img.expanded.landscape,
+      #imageContainer video.expanded.landscape {
+        width: 80vw;
+        height: auto;
+        max-width: 80vw;
+        max-height: 100vh;
+        cursor: zoom-out;
+      }
+    
+      /* 확대된 상태의 세로가 긴 경우 */
+      #imageContainer img.expanded.portrait,
+      #imageContainer video.expanded.portrait {
+        width: auto;
+        height: 100vh;
+        max-width: 80vw;
+        max-height: 100vh;
+        cursor: zoom-out;
+      }
+    
+      .container {
+        text-align: center;
+      }
+    
       .header-content {
-        font-size: 23px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 20px;
+        font-size: 30px;
+        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
       }
-      .title-img-desktop {
+    
+      .header-content img {
+        margin-right: 20px;
+        border-radius: 14px;
+      }
+    
+      .toggle-button {
+        background-color: #28a745;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        display: none;
+        justify-content: center;
+        align-items: center;
+        cursor: pointer;
+        font-size: 24px;
+        margin-left: 20px;
+      }
+    
+      .hidden {
         display: none;
       }
-      .title-img-mobile {
+    
+      .title-img-desktop {
         display: block;
       }
-    }
+    
+      .title-img-mobile {
+        display: none;
+      }
+    
+      @media (max-width: 768px) {
+        button {
+          width: 300px;
+        }
+        #linkBox {
+          width: 200px;
+        }
+        .header-content {
+          font-size: 23px;
+        }
+        .title-img-desktop {
+          display: none;
+        }
+        .title-img-mobile {
+          display: block;
+        }
+      }
     </style>
     <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
     <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
@@ -634,10 +554,10 @@ export default {
       });
     </script>
   </body>
-  </html>`;
+</html>`;
         return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
       }
     
       return env.ASSETS.fetch(request);
     }
-  };
+};
