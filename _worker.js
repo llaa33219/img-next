@@ -23,7 +23,8 @@ export default {
           let pos = 0;
           while (pos < length) {
             if (pos + 8 > length) break;
-            const size = view.getUint32(pos);
+            let size = view.getUint32(pos);
+            if (size < 8) break; // 유효하지 않은 박스 크기 방지
             const type = String.fromCharCode(
               view.getUint8(pos + 4),
               view.getUint8(pos + 5),
@@ -35,7 +36,8 @@ export default {
               let pos2 = pos + 8;
               while (pos2 < moovEnd) {
                 if (pos2 + 8 > moovEnd) break;
-                const boxSize = view.getUint32(pos2);
+                let boxSize = view.getUint32(pos2);
+                if (boxSize < 8) break; // 유효하지 않은 박스 크기 방지
                 const boxType = String.fromCharCode(
                   view.getUint8(pos2 + 4),
                   view.getUint8(pos2 + 5),
@@ -60,6 +62,7 @@ export default {
               }
             }
             pos += size;
+            if (size <= 0) break; // 무한 루프 방지
           }
           return null;
         } catch (e) {
