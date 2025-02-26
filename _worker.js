@@ -158,17 +158,16 @@ export default {
               }
               const effectiveDuration = Math.min(duration, 30);
   
-              // Cloudflare Stream 업로드: file 객체 대신 ArrayBuffer로 변환하여 raw binary 데이터를 전송
-              const videoBuffer = await file.arrayBuffer();
+              // Cloudflare Stream 업로드: file 객체의 스트림을 전송합니다.
+              const videoStream = file.stream();
               const streamUploadResponse = await fetch(
                 `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream?direct_user=true`,
                 {
                   method: 'POST',
                   headers: {
-                    'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`,
-                    'Content-Type': 'application/octet-stream'
+                    'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`
                   },
-                  body: videoBuffer
+                  body: videoStream
                 }
               );
               const streamUploadText = await streamUploadResponse.text();
