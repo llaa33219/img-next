@@ -30,7 +30,6 @@ export default {
           for (let i = 0; i < uint8.length - 4; i++) {
             if (uint8[i] === 109 && uint8[i + 1] === 118 && uint8[i + 2] === 104 && uint8[i + 3] === 100) {
               const boxStart = i - 4; // mvhd 박스는 size(4) + type(4)로 시작
-              // 버전과 flags는 boxStart+8 ~ boxStart+11
               const version = dv.getUint8(boxStart + 8);
               if (version === 0) {
                 // version 0: header = 4(size)+4(type)+1(version)+3(flags)+4(creation)+4(modification)+4(timescale)+4(duration)
@@ -203,19 +202,16 @@ export default {
               } else {
                 // 1분 이상이면 59초 단위로 분할하여 각각 동기 API 호출
                 const numSegments = Math.ceil(videoDuration / 59);
-                const totalSize = file.size;
                 let reasons = [];
   
                 for (let i = 0; i < numSegments; i++) {
                   const segmentStartTime = i * 59;
-                  const segmentEndTime = Math.min((i + 1) * 59, videoDuration);
-                  // 파일 전체 duration 대비 비율로 바이트 범위를 계산 (상수 비트레이트 가정)
-                  const startByte = Math.floor((segmentStartTime / videoDuration) * totalSize);
-                  const endByte = Math.floor((segmentEndTime / videoDuration) * totalSize);
-                  const segmentBlob = file.slice(startByte, endByte, file.type);
-  
+                  const segmentDuration = (i === numSegments - 1) ? videoDuration - segmentStartTime : 59;
                   const segmentForm = new FormData();
-                  segmentForm.append('media', segmentBlob, 'upload');
+                  // 전체 파일을 전송하고, 'start'와 'length' 필드로 분할 구간 지정
+                  segmentForm.append('media', file, 'upload');
+                  segmentForm.append('start', segmentStartTime);
+                  segmentForm.append('length', segmentDuration);
                   segmentForm.append('models', 'nudity,wad,offensive');
                   segmentForm.append('api_user', env.SIGHTENGINE_API_USER);
                   segmentForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
