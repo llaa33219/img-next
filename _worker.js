@@ -20,7 +20,7 @@ export default {
         return btoa(binary);
       };
   
-      // POST /upload : 다중 파일 업로드 처리 (모자이크 처리 적용)
+      // POST /upload : 다중 파일 업로드 처리 (이미지는 모자이크 처리 적용, 영상은 기존 검열 로직 그대로)
       if (request.method === 'POST' && url.pathname === '/upload') {
         try {
           const formData = await request.formData();
@@ -28,22 +28,36 @@ export default {
           if (!files || files.length === 0) {
             return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
           }
-          // 1. 모자이크 처리 단계: 모든 이미지 파일에 대해 Image Redaction API 호출하여 모자이크 처리 후 업로드 (비디오 검열은 기존 방식 유지)
+          // 1. 각 파일 처리
           for (let i = 0; i < files.length; i++) {
             let file = files[i];
             if (file.type.startsWith('image/')) {
               // -------------------------------------------
-              // 이미지 모자이크 처리 (Image Redaction API 사용)
+              // 이미지: 기존 리사이징 단계 유지 후 Image Redaction API (모자이크 처리) 적용
               // -------------------------------------------
-              let fileForRedaction = file;
+              let fileForProcessing = file;
+              try {
+                // 기존 리사이징 (최대 600px)
+                const buffer = await file.arrayBuffer();
+                const base64 = arrayBufferToBase64(buffer);
+                const dataUrl = `data:${file.type};base64,${base64}`;
+                const reqForResize = new Request(dataUrl, {
+                  cf: { image: { width: 600, height: 600, fit: "inside" } }
+                });
+                const resizedResponse = await fetch(reqForResize);
+                fileForProcessing = await resizedResponse.blob();
+              } catch (e) {
+                fileForProcessing = file;
+              }
+  
+              let fileForRedaction = fileForProcessing;
               try {
                 const redactionForm = new FormData();
-                // 원본 파일을 그대로 사용하여 모자이크 처리
-                redactionForm.append('media', file, 'upload');
-                // 모델을 redaction으로 지정하고, 모자이크 처리 옵션 설정
+                // 파일 스트림 소진 방지를 위해 slice() 사용
+                redactionForm.append('media', fileForProcessing.slice(0, fileForProcessing.size, fileForProcessing.type), 'upload');
                 redactionForm.append('models', 'redaction');
                 redactionForm.append('redaction', 'mosaic');
-                // 모자이크 강도 설정 (빡세게 적용)
+                // 모자이크 강도: 기존 검열 강도와 동일하게(빡세게 적용)
                 redactionForm.append('mosaic_intensity', '20');
                 redactionForm.append('api_user', env.SIGHTENGINE_API_USER);
                 redactionForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
@@ -54,7 +68,7 @@ export default {
                 });
                 const redactionResult = await redactionResponse.json();
   
-                if (redactionResult.redacted) {
+                if (redactionResult && redactionResult.redacted) {
                   const redactedFetch = await fetch(redactionResult.redacted);
                   const redactedBlob = await redactedFetch.blob();
                   fileForRedaction = new File([redactedBlob], file.name, { type: file.type });
@@ -152,11 +166,12 @@ export default {
                   return new Response(JSON.stringify({ success: false, error: "비디오 검열 시작 오류" }), { status: 400 });
                 }
   
+                // job_id를 받아 폴링
                 const jobId = initResult.job.id;
                 let pollResult;
                 let totalWait = 0;
-                const POLL_INTERVAL = 5000;
-                const MAX_WAIT = 30000;
+                const POLL_INTERVAL = 5000;  // 5초 간격
+                const MAX_WAIT = 30000;      // 최대 30초 대기
   
                 while (true) {
                   await new Promise(r => setTimeout(r, POLL_INTERVAL));
@@ -167,12 +182,15 @@ export default {
                   );
                   pollResult = await pollResponse.json();
   
+                  // 완료 시 탈출
                   if (pollResult.status === 'finished') {
                     break;
                   }
+                  // 실패 시 에러
                   if (pollResult.status === 'failure') {
                     return new Response(JSON.stringify({ success: false, error: "비디오 분석 실패" }), { status: 400 });
                   }
+                  // 타임아웃
                   if (totalWait >= MAX_WAIT) {
                     return new Response(JSON.stringify({ success: false, error: "검열 시간 초과" }), { status: 400 });
                   }
@@ -237,7 +255,7 @@ export default {
             }
           }
   
-          // 2. 모든 파일이 모자이크 처리(및 검열) 통과하면 업로드 진행 (각 파일 별로 R2에 저장)
+          // 2. 모든 파일이 처리되면 업로드 진행 (각 파일 별로 R2에 저장)
           let codes = [];
           for (const file of files) {
             const generateRandomCode = (length = 8) => {
