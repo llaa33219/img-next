@@ -95,11 +95,13 @@ export default {
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
+              console.log("이미지 검열 API 요청 시작:", file.name);
               const sightResponse = await fetch('https://api.sightengine.com/1.0/check.json', {
                 method: 'POST',
                 body: sightForm
               });
               const sightResult = await sightResponse.json();
+              console.log("이미지 검열 API 응답:", sightResult);
   
               let reasons = [];
               if (sightResult.nudity) {
@@ -137,6 +139,7 @@ export default {
   
               if (videoDuration < 60) {
                 // 1분 미만이면 전체 파일을 한 번에 동기 API로 처리
+                console.log("동영상(1분 미만) 검열 API 요청 시작:", file.name, "duration:", videoDuration);
                 const sightForm = new FormData();
                 sightForm.append('media', file, 'upload');
                 sightForm.append('models', 'nudity,wad,offensive');
@@ -147,7 +150,9 @@ export default {
                   method: 'POST',
                   body: sightForm
                 });
+                console.log("동영상(1분 미만) 검열 API 응답:", sightResponse.status);
                 const sightResult = await sightResponse.json();
+                console.log("동영상(1분 미만) 검열 결과:", sightResult);
   
                 let reasons = [];
                 let frames = [];
@@ -209,6 +214,7 @@ export default {
                 // 1분 이상이면 59초 단위로 분할하여 각각 동기 API 호출
                 const numSegments = Math.ceil(videoDuration / 59);
                 const totalSize = file.size;
+                console.log("동영상(1분 이상) 검열 분할 시작:", file.name, "duration:", videoDuration, "segments:", numSegments);
                 let reasons = [];
   
                 for (let i = 0; i < numSegments; i++) {
@@ -220,6 +226,7 @@ export default {
                   if (endByte <= startByte) {
                     endByte = startByte + 1;
                   }
+                  console.log("동영상 세그먼트 검열 요청:", file.name, "세그먼트:", i, "startByte:", startByte, "endByte:", endByte);
                   const segmentBlob = file.slice(startByte, endByte, file.type);
   
                   const segmentForm = new FormData();
@@ -232,7 +239,9 @@ export default {
                     method: 'POST',
                     body: segmentForm
                   });
+                  console.log("세그먼트", i, "검열 API 응답 상태:", segmentResponse.status);
                   const segmentResult = await segmentResponse.json();
+                  console.log("세그먼트", i, "검열 결과:", segmentResult);
   
                   let frames = [];
                   if (segmentResult.data && segmentResult.data.frames) {
