@@ -158,14 +158,13 @@ export default {
               }
               const effectiveDuration = Math.min(duration, 30);
   
-              // Cloudflare Stream 업로드 (Content-Type 추가 & 상세 에러 메시지 로깅)
+              // Cloudflare Stream 업로드 (Content-Type 헤더 제거)
               const streamUploadResponse = await fetch(
                 `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream?direct_user=true`,
                 {
                   method: 'POST',
                   headers: {
-                    'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`,
-                    'Content-Type': file.type || 'application/octet-stream'
+                    'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`
                   },
                   body: file
                 }
