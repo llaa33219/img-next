@@ -66,10 +66,7 @@ export default {
           const formData = await request.formData();
           const files = formData.getAll('file');
           if (!files || files.length === 0) {
-            return new Response(
-              JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }),
-              { status: 400 }
-            );
+            return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
           }
   
           // 1. 검열 단계: 모든 파일에 대해 검열 API 호출 (검열 통과 못하면 업로드 중단)
@@ -78,7 +75,6 @@ export default {
               // 이미지 검열
               let fileForCensorship = file;
               try {
-                // 이미지 리사이징: 최대 가로/세로 600px로 축소하여 검열 속도 향상
                 const buffer = await file.arrayBuffer();
                 const base64 = arrayBufferToBase64(buffer);
                 const dataUrl = `data:${file.type};base64,${base64}`;
@@ -88,17 +84,11 @@ export default {
                 const resizedResponse = await fetch(reqForResize);
                 fileForCensorship = await resizedResponse.blob();
               } catch (e) {
-                // 리사이징 실패 시 원본 파일 사용
                 fileForCensorship = file;
               }
   
               const sightForm = new FormData();
-              // 파일 스트림 소진 방지를 위해 slice()로 복제
-              sightForm.append(
-                'media',
-                fileForCensorship.slice(0, fileForCensorship.size, fileForCensorship.type),
-                'upload'
-              );
+              sightForm.append('media', fileForCensorship.slice(0, fileForCensorship.size, fileForCensorship.type), 'upload');
               sightForm.append('models', 'nudity,wad,offensive');
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
@@ -123,10 +113,7 @@ export default {
                 reasons.push("잔인하거나 위험한 콘텐츠");
               }
               if (reasons.length > 0) {
-                return new Response(
-                  JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }),
-                  { status: 400 }
-                );
+                return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
             } else if (file.type.startsWith('video/')) {
               // 동영상 검열 (영상 길이에 따라 분기)
@@ -165,13 +152,9 @@ export default {
                 let reasons = [];
                 let frames = [];
                 if (sightResult.data && sightResult.data.frames) {
-                  frames = Array.isArray(sightResult.data.frames)
-                    ? sightResult.data.frames
-                    : [sightResult.data.frames];
+                  frames = Array.isArray(sightResult.data.frames) ? sightResult.data.frames : [sightResult.data.frames];
                 } else if (sightResult.frames) {
-                  frames = Array.isArray(sightResult.frames)
-                    ? sightResult.frames
-                    : [sightResult.frames];
+                  frames = Array.isArray(sightResult.frames) ? sightResult.frames : [sightResult.frames];
                 }
   
                 if (frames.length > 0) {
@@ -185,11 +168,7 @@ export default {
                         }
                       }
                     }
-                    if (
-                      frame.offensive &&
-                      frame.offensive.prob !== undefined &&
-                      Number(frame.offensive.prob) >= videoThreshold
-                    ) {
+                    if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= videoThreshold) {
                       reasons.push("욕설/모욕적 콘텐츠");
                     }
                     if (frame.wad) {
@@ -211,12 +190,7 @@ export default {
                       }
                     }
                   }
-                  if (
-                    sightResult.data &&
-                    sightResult.data.offensive &&
-                    sightResult.data.offensive.prob !== undefined &&
-                    Number(sightResult.data.offensive.prob) >= videoThreshold
-                  ) {
+                  if (sightResult.data && sightResult.data.offensive && sightResult.data.offensive.prob !== undefined && Number(sightResult.data.offensive.prob) >= videoThreshold) {
                     reasons.push("욕설/모욕적 콘텐츠");
                   }
                   if (sightResult.data && sightResult.data.wad) {
@@ -229,10 +203,7 @@ export default {
                   }
                 }
                 if (reasons.length > 0) {
-                  return new Response(
-                    JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }),
-                    { status: 400 }
-                  );
+                  return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
   
               } else {
@@ -242,21 +213,19 @@ export default {
                   body: sightForm
                 });
                 const initResult = await initResponse.json();
+                console.log("initResult:", initResult);
   
                 if (!initResult || initResult.status !== 'success') {
-                  return new Response(
-                    JSON.stringify({ success: false, error: "비디오 검열 시작 오류" }),
-                    { status: 400 }
-                  );
+                  return new Response(JSON.stringify({ success: false, error: "비디오 검열 시작 오류" }), { status: 400 });
                 }
   
                 let pollResult;
                 if (initResult.job && initResult.job.id) {
                   const jobId = initResult.job.id;
                   let totalWait = 0;
-                  // MAX_WAIT를 60000ms(60초)로 연장
-                  const POLL_INTERVAL = 5000;
-                  const MAX_WAIT = 60000;
+                  // 폴링 주기를 3000ms(3초), 최대 대기 시간을 120000ms(2분)로 연장
+                  const POLL_INTERVAL = 3000;
+                  const MAX_WAIT = 120000;
   
                   while (true) {
                     await new Promise(r => setTimeout(r, POLL_INTERVAL));
@@ -266,23 +235,16 @@ export default {
                       `https://api.sightengine.com/1.0/video/check.json?job_id=${jobId}&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`
                     );
                     pollResult = await pollResponse.json();
-  
                     console.log("Polling result:", pollResult);
   
                     if (pollResult.status === 'finished') {
                       break;
                     }
                     if (pollResult.status === 'failure') {
-                      return new Response(
-                        JSON.stringify({ success: false, error: "비디오 분석 실패" }),
-                        { status: 400 }
-                      );
+                      return new Response(JSON.stringify({ success: false, error: "비디오 분석 실패" }), { status: 400 });
                     }
                     if (totalWait >= MAX_WAIT) {
-                      return new Response(
-                        JSON.stringify({ success: false, error: "검열 시간 초과" }),
-                        { status: 400 }
-                      );
+                      return new Response(JSON.stringify({ success: false, error: "검열 시간 초과" }), { status: 400 });
                     }
                   }
                 } else {
@@ -292,13 +254,9 @@ export default {
                 let reasons = [];
                 let frames = [];
                 if (pollResult.data && pollResult.data.frames) {
-                  frames = Array.isArray(pollResult.data.frames)
-                    ? pollResult.data.frames
-                    : [pollResult.data.frames];
+                  frames = Array.isArray(pollResult.data.frames) ? pollResult.data.frames : [pollResult.data.frames];
                 } else if (pollResult.frames) {
-                  frames = Array.isArray(pollResult.frames)
-                    ? pollResult.frames
-                    : [pollResult.frames];
+                  frames = Array.isArray(pollResult.frames) ? pollResult.frames : [pollResult.frames];
                 }
                 if (frames.length > 0) {
                   for (const frame of frames) {
@@ -311,11 +269,7 @@ export default {
                         }
                       }
                     }
-                    if (
-                      frame.offensive &&
-                      frame.offensive.prob !== undefined &&
-                      Number(frame.offensive.prob) >= videoThreshold
-                    ) {
+                    if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= videoThreshold) {
                       reasons.push("욕설/모욕적 콘텐츠");
                     }
                     if (frame.wad) {
@@ -337,12 +291,7 @@ export default {
                       }
                     }
                   }
-                  if (
-                    pollResult.data &&
-                    pollResult.data.offensive &&
-                    pollResult.data.offensive.prob !== undefined &&
-                    Number(pollResult.data.offensive.prob) >= videoThreshold
-                  ) {
+                  if (pollResult.data && pollResult.data.offensive && pollResult.data.offensive.prob !== undefined && Number(pollResult.data.offensive.prob) >= videoThreshold) {
                     reasons.push("욕설/모욕적 콘텐츠");
                   }
                   if (pollResult.data && pollResult.data.wad) {
@@ -355,10 +304,7 @@ export default {
                   }
                 }
                 if (reasons.length > 0) {
-                  return new Response(
-                    JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }),
-                    { status: 400 }
-                  );
+                  return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
               }
             }
@@ -382,10 +328,7 @@ export default {
               if (!existing) break;
             }
             if (!code) {
-              return new Response(
-                JSON.stringify({ success: false, error: '코드 생성 실패' }),
-                { status: 500 }
-              );
+              return new Response(JSON.stringify({ success: false, error: '코드 생성 실패' }), { status: 500 });
             }
             const fileBuffer = await file.arrayBuffer();
             await env.IMAGES.put(code, fileBuffer, {
@@ -395,15 +338,11 @@ export default {
           }
           const urlCodes = codes.join(",");
           const imageUrl = `https://${url.host}/${urlCodes}`;
-          return new Response(
-            JSON.stringify({ success: true, url: imageUrl }),
-            { headers: { 'Content-Type': 'application/json' } }
-          );
+          return new Response(JSON.stringify({ success: true, url: imageUrl }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
         } catch (err) {
-          return new Response(
-            JSON.stringify({ success: false, error: err.message }),
-            { status: 500 }
-          );
+          return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
         }
       }
       // GET /{코드} : R2에서 파일 반환 또는 HTML 래퍼 페이지 제공 (다중 코드 지원)
