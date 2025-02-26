@@ -58,7 +58,6 @@ export default {
               const sightResult = await sightResponse.json();
   
               let reasons = [];
-              // 이미지 검열은 기존 조건 그대로 사용
               if (sightResult.nudity) {
                 const { is_nude, raw, partial } = sightResult.nudity;
                 if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
@@ -78,7 +77,7 @@ export default {
               // -------------------------------------------
               // 동영상 검열 (짧은/긴 분기)
               // -------------------------------------------
-              // 동영상의 경우 임계치를 낮춰서 검열 (예: 0.1)
+              // 동영상의 경우 임계치를 0.1로 낮춰서 검열
               const videoThreshold = 0.1;
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
@@ -95,8 +94,13 @@ export default {
                 const sightResult = await sightResponse.json();
   
                 let reasons = [];
-                if (sightResult.frames && Array.isArray(sightResult.frames) && sightResult.frames.length > 0) {
-                  for (const frame of sightResult.frames) {
+                // sightResult.frames가 없으면 단일 객체로 가정하고 배열로 변환
+                let frames = [];
+                if (sightResult.frames) {
+                  frames = Array.isArray(sightResult.frames) ? sightResult.frames : [sightResult.frames];
+                }
+                if (frames.length > 0) {
+                  for (const frame of frames) {
                     if (frame.nudity) {
                       const { is_nude, raw, partial } = frame.nudity;
                       if (is_nude === true || (raw && Number(raw) > videoThreshold) || (partial && Number(partial) > videoThreshold)) {
@@ -179,8 +183,12 @@ export default {
                 }
   
                 let reasons = [];
-                if (pollResult.frames && Array.isArray(pollResult.frames) && pollResult.frames.length > 0) {
-                  for (const frame of pollResult.frames) {
+                let frames = [];
+                if (pollResult.frames) {
+                  frames = Array.isArray(pollResult.frames) ? pollResult.frames : [pollResult.frames];
+                }
+                if (frames.length > 0) {
+                  for (const frame of frames) {
                     if (frame.nudity) {
                       const { is_nude, raw, partial } = frame.nudity;
                       if (is_nude === true || (raw && Number(raw) > videoThreshold) || (partial && Number(partial) > videoThreshold)) {
@@ -384,22 +392,24 @@ export default {
       object-fit: contain;
       cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
     }
-  
+
     /* 가로가 긴 경우 */
     #imageContainer img.landscape,
     #imageContainer video.landscape {
       width: 40vw;
       height: auto;
       max-width: 40vw;
+      max-height: 50vh;
       cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
     }
-  
+
     /* 세로가 긴 경우 */
     #imageContainer img.portrait,
     #imageContainer video.portrait {
       width: auto;
       height: 50vh;
       max-width: 40vw;
+      max-height: 50vh;
       cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
     }
   
@@ -412,7 +422,7 @@ export default {
       max-height: 100vh;
       cursor: zoom-out;
     }
-  
+
     /* 확대된 상태의 세로가 긴 경우 */
     #imageContainer img.expanded.portrait,
     #imageContainer video.expanded.portrait {
@@ -508,7 +518,7 @@ export default {
       overflow: hidden; /* 메뉴 내에서 넘치는 부분 숨김 */
       box-sizing: border-box; /* 패딩과 보더를 포함한 크기 계산 */
     }
-  
+
     .custom-context-menu button {
       color: #000;
       background-color: #e7e7e7;
@@ -531,7 +541,7 @@ export default {
       /* 기본 transform 제거 */
       transform: none;
     }
-  
+
     .custom-context-menu button:hover {
       background-color: #9c9c9c;
       box-shadow: none;
@@ -539,15 +549,15 @@ export default {
       /* 호버 시 transform 제거 */
       transform: none;
     }
-  
+
     .title-img-desktop {
       display: block;
     }
-  
+
     .title-img-mobile {
       display: none;
     }
-  
+
     @media (max-width: 768px) {
       button {
         width: 300px;
@@ -566,7 +576,6 @@ export default {
       }
     }
     </style>
-    <!-- BLOUplayer 관련 -->
     <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
     <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
   </head>
@@ -580,7 +589,6 @@ export default {
     </div>
     <script>
       function toggleZoom(elem) {
-        // 만약 가로/세로 클래스가 부여되지 않았다면 자연 사이즈를 기준으로 추가
         if (!elem.classList.contains('landscape') && !elem.classList.contains('portrait')) {
           let width = 0, height = 0;
           if (elem.tagName.toLowerCase() === 'img') {
