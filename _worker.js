@@ -14,6 +14,16 @@ export default {
         return btoa(binary);
       };
 
+      // 헬퍼 함수: 응답을 안전하게 JSON으로 파싱 (JSON이 아니면 에러 발생)
+      const safeJson = async (response) => {
+        const contentType = response.headers.get("Content-Type") || "";
+        if (!contentType.includes("application/json")) {
+          const text = await response.text();
+          throw new Error(`검열 API 응답이 JSON이 아님: ${text}`);
+        }
+        return response.json();
+      };
+  
       // 헬퍼 함수: MP4 파일에서 mvhd atom을 찾아 영상 길이(초)를 계산
       const parseMp4Duration = (buffer) => {
         try {
@@ -114,7 +124,7 @@ export default {
                 method: 'POST',
                 body: sightForm
               });
-              const sightResult = await sightResponse.json();
+              const sightResult = await safeJson(sightResponse);
   
               let reasons = [];
               if (sightResult.nudity) {
@@ -165,7 +175,7 @@ export default {
                   method: 'POST',
                   body: frameForm
                 });
-                return await frameResponse.json();
+                return await safeJson(frameResponse);
               })());
   
               const results = await Promise.all(censorshipPromises);
