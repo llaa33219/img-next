@@ -153,14 +153,22 @@ export default {
                 const reqForThumbnail = new Request(videoDataUrl, {
                   cf: { video: { thumbnail: true, time: timestamp, width: 600, height: 600, fit: "inside" } }
                 });
-                framePromises.push(fetch(reqForThumbnail).then(res => res.blob()));
+                framePromises.push(
+                  fetch(reqForThumbnail).then(async res => {
+                    if (!res.ok) {
+                      const text = await res.text();
+                      throw new Error(`프레임 추출 실패: ${res.status} ${res.statusText}: ${text}`);
+                    }
+                    return res.blob();
+                  })
+                );
               }
   
               let frameBlobs;
               try {
                 frameBlobs = await Promise.all(framePromises);
               } catch (e) {
-                return new Response(JSON.stringify({ success: false, error: "영상 프레임 추출 실패" }), { status: 400 });
+                return new Response(JSON.stringify({ success: false, error: "영상 프레임 추출 실패: " + e.message }), { status: 400 });
               }
   
               // 추출된 각 프레임에 대해 이미지 검열 API 병렬 호출
@@ -173,14 +181,22 @@ export default {
                 return fetch('https://api.sightengine.com/1.0/check.json', {
                   method: 'POST',
                   body: sightForm
-                }).then(res => res.json());
+                }).then(async res => {
+                  const contentType = res.headers.get('content-type') || '';
+                  if (contentType.includes('application/json')) {
+                    return res.json();
+                  } else {
+                    const text = await res.text();
+                    throw new Error(`검열 API 응답이 JSON이 아님: ${text}`);
+                  }
+                });
               });
   
               let frameResults;
               try {
                 frameResults = await Promise.all(censorshipPromises);
               } catch (e) {
-                return new Response(JSON.stringify({ success: false, error: "검열 API 요청 실패" }), { status: 400 });
+                return new Response(JSON.stringify({ success: false, error: "검열 API 요청 실패: " + e.message }), { status: 400 });
               }
   
               // 20개 프레임 결과 중 각 카테고리(선정성, 욕설, 위험)의 최대값을 계산
