@@ -58,7 +58,7 @@ export default {
               const sightResult = await sightResponse.json();
   
               let reasons = [];
-              // ---- 검열 기준 강화 ----
+              // ---- 검열 기준 강화 (예시) ----
               if (sightResult.nudity) {
                 const { is_nude, raw, partial } = sightResult.nudity;
                 if (
@@ -85,17 +85,19 @@ export default {
               }
             } else if (file.type.startsWith('video/')) {
               // -------------------------------------------
-              // 동영상 검열 (짧은/긴 분기) + 검열 기준 강화
+              // 동영상 검열 (짧은/긴 분기) + 프레임 샘플링 간격 추가
               // -------------------------------------------
               const MAX_SYNC_SIZE = 40 * 1024 * 1024; // 40MB 기준
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
+              // 추가: 프레임 샘플링 간격을 1초로 설정하여 더 많은 프레임을 분석
+              sightForm.append('frame_interval', '1');
               sightForm.append('models', 'nudity,wad,offensive');
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
               if (file.size < MAX_SYNC_SIZE) {
-                // 1) 비교적 작은(짧은) 영상: 동기 API
+                // 1) 비교적 작은(짧은) 영상: 동기 API 사용
                 const sightResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                   method: 'POST',
                   body: sightForm
@@ -103,7 +105,7 @@ export default {
                 const sightResult = await sightResponse.json();
   
                 let reasons = [];
-                // ---- 검열 기준 강화 ----
+                // ---- 검열 기준 강화 (예시) ----
                 if (sightResult.nudity) {
                   const { is_nude, raw, partial } = sightResult.nudity;
                   if (
@@ -130,7 +132,7 @@ export default {
                 }
   
               } else {
-                // 2) 큰(길거나 용량 큰) 영상: 비동기 API + 폴링
+                // 2) 큰(길거나 용량 큰) 영상: 비동기 API + 폴링 사용
                 const initResponse = await fetch('https://api.sightengine.com/1.0/video/check.json', {
                   method: 'POST',
                   body: sightForm
@@ -173,7 +175,7 @@ export default {
   
                 // pollResult가 최종 결과
                 let reasons = [];
-                // ---- 검열 기준 강화 ----
+                // ---- 검열 기준 강화 (예시) ----
                 if (pollResult.nudity) {
                   const { is_nude, raw, partial } = pollResult.nudity;
                   if (
