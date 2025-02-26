@@ -132,7 +132,7 @@ export default {
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
-              // 영상 길이 체크 (1분 미만이면 동기, 이상이면 비동기)
+              // 영상 길이 체크: 1분 미만이면 동기, 이상이면 비동기
               let isShort = false;
               try {
                 const headerBuffer = await file.slice(0, 1024 * 1024).arrayBuffer();
@@ -140,9 +140,14 @@ export default {
                 if (file.type === 'video/mp4' || (file.name && file.name.toLowerCase().endsWith('.mp4'))) {
                   duration = parseMp4Duration(headerBuffer);
                 }
-                if (duration !== null && duration < 60) {
-                  isShort = true;
-                } else if (duration === null) {
+                if (duration !== null) {
+                  if (duration < 60) {
+                    isShort = true;
+                  } else {
+                    // 영상 길이가 1분 이상이어도, 파일 크기가 40MB 미만이면 동기 API를 사용하도록 처리 (원래 조건 유지)
+                    isShort = file.size < 40 * 1024 * 1024;
+                  }
+                } else {
                   // 영상 길이 파싱에 실패하면 파일 크기를 fallback 기준으로 사용 (40MB 미만이면 짧은 영상)
                   isShort = file.size < 40 * 1024 * 1024;
                 }
@@ -152,7 +157,7 @@ export default {
               }
   
               if (isShort) {
-                // 1) 비교적 짧은 영상: 동기 API
+                // 1) 짧은 영상: 동기 API
                 const sightResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                   method: 'POST',
                   body: sightForm
