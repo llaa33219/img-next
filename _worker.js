@@ -77,8 +77,8 @@ export default {
               // -------------------------------------------
               // 동영상 검열 (짧은/긴 분기)
               // -------------------------------------------
-              // 동영상의 경우 임계치를 0.1로 낮춰서 검열
-              const videoThreshold = 0.1;
+              // 동영상의 경우 임계치를 0.0으로 낮춰서, 조금이라도 감지되면 검열
+              const videoThreshold = 0.0;
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
               sightForm.append('models', 'nudity,wad,offensive');
@@ -103,17 +103,17 @@ export default {
                   for (const frame of frames) {
                     if (frame.nudity) {
                       const { is_nude, raw, partial } = frame.nudity;
-                      if (is_nude === true || (raw && Number(raw) > videoThreshold) || (partial && Number(partial) > videoThreshold)) {
+                      if (is_nude === true || (raw && Number(raw) >= videoThreshold) || (partial && Number(partial) >= videoThreshold)) {
                         reasons.push("선정적 콘텐츠");
                       }
                     }
-                    if (frame.offensive && frame.offensive.prob && Number(frame.offensive.prob) > videoThreshold) {
+                    if (frame.offensive && frame.offensive.prob && Number(frame.offensive.prob) >= videoThreshold) {
                       reasons.push("욕설/모욕적 콘텐츠");
                     }
                     if (frame.wad && (
-                        (frame.wad.weapon && Number(frame.wad.weapon) > videoThreshold) ||
-                        (frame.wad.alcohol && Number(frame.wad.alcohol) > videoThreshold) ||
-                        (frame.wad.drugs && Number(frame.wad.drugs) > videoThreshold)
+                        (frame.wad.weapon && Number(frame.wad.weapon) >= videoThreshold) ||
+                        (frame.wad.alcohol && Number(frame.wad.alcohol) >= videoThreshold) ||
+                        (frame.wad.drugs && Number(frame.wad.drugs) >= videoThreshold)
                       )) {
                       reasons.push("잔인하거나 위험한 콘텐츠");
                     }
@@ -121,17 +121,17 @@ export default {
                 } else {
                   if (sightResult.nudity) {
                     const { is_nude, raw, partial } = sightResult.nudity;
-                    if (is_nude === true || (raw && Number(raw) > videoThreshold) || (partial && Number(partial) > videoThreshold)) {
+                    if (is_nude === true || (raw && Number(raw) >= videoThreshold) || (partial && Number(partial) >= videoThreshold)) {
                       reasons.push("선정적 콘텐츠");
                     }
                   }
-                  if (sightResult.offensive && sightResult.offensive.prob && Number(sightResult.offensive.prob) > videoThreshold) {
+                  if (sightResult.offensive && sightResult.offensive.prob && Number(sightResult.offensive.prob) >= videoThreshold) {
                     reasons.push("욕설/모욕적 콘텐츠");
                   }
                   if (sightResult.wad && (
-                      (sightResult.wad.weapon && Number(sightResult.wad.weapon) > videoThreshold) ||
-                      (sightResult.wad.alcohol && Number(sightResult.wad.alcohol) > videoThreshold) ||
-                      (sightResult.wad.drugs && Number(sightResult.wad.drugs) > videoThreshold)
+                      (sightResult.wad.weapon && Number(sightResult.wad.weapon) >= videoThreshold) ||
+                      (sightResult.wad.alcohol && Number(sightResult.wad.alcohol) >= videoThreshold) ||
+                      (sightResult.wad.drugs && Number(sightResult.wad.drugs) >= videoThreshold)
                     )) {
                     reasons.push("잔인하거나 위험한 콘텐츠");
                   }
@@ -191,17 +191,17 @@ export default {
                   for (const frame of frames) {
                     if (frame.nudity) {
                       const { is_nude, raw, partial } = frame.nudity;
-                      if (is_nude === true || (raw && Number(raw) > videoThreshold) || (partial && Number(partial) > videoThreshold)) {
+                      if (is_nude === true || (raw && Number(raw) >= videoThreshold) || (partial && Number(partial) >= videoThreshold)) {
                         reasons.push("선정적 콘텐츠");
                       }
                     }
-                    if (frame.offensive && frame.offensive.prob && Number(frame.offensive.prob) > videoThreshold) {
+                    if (frame.offensive && frame.offensive.prob && Number(frame.offensive.prob) >= videoThreshold) {
                       reasons.push("욕설/모욕적 콘텐츠");
                     }
                     if (frame.wad && (
-                        (frame.wad.weapon && Number(frame.wad.weapon) > videoThreshold) ||
-                        (frame.wad.alcohol && Number(frame.wad.alcohol) > videoThreshold) ||
-                        (frame.wad.drugs && Number(frame.wad.drugs) > videoThreshold)
+                        (frame.wad.weapon && Number(frame.wad.weapon) >= videoThreshold) ||
+                        (frame.wad.alcohol && Number(frame.wad.alcohol) >= videoThreshold) ||
+                        (frame.wad.drugs && Number(frame.wad.drugs) >= videoThreshold)
                       )) {
                       reasons.push("잔인하거나 위험한 콘텐츠");
                     }
@@ -209,17 +209,17 @@ export default {
                 } else {
                   if (pollResult.nudity) {
                     const { is_nude, raw, partial } = pollResult.nudity;
-                    if (is_nude === true || (raw && Number(raw) > videoThreshold) || (partial && Number(partial) > videoThreshold)) {
+                    if (is_nude === true || (raw && Number(raw) >= videoThreshold) || (partial && Number(partial) >= videoThreshold)) {
                       reasons.push("선정적 콘텐츠");
                     }
                   }
-                  if (pollResult.offensive && pollResult.offensive.prob && Number(pollResult.offensive.prob) > videoThreshold) {
+                  if (pollResult.offensive && pollResult.offensive.prob && Number(pollResult.offensive.prob) >= videoThreshold) {
                     reasons.push("욕설/모욕적 콘텐츠");
                   }
                   if (pollResult.wad && (
-                      (pollResult.wad.weapon && Number(pollResult.wad.weapon) > videoThreshold) ||
-                      (pollResult.wad.alcohol && Number(pollResult.wad.alcohol) > videoThreshold) ||
-                      (pollResult.wad.drugs && Number(pollResult.wad.drugs) > videoThreshold)
+                      (pollResult.wad.weapon && Number(pollResult.wad.weapon) >= videoThreshold) ||
+                      (pollResult.wad.alcohol && Number(pollResult.wad.alcohol) >= videoThreshold) ||
+                      (pollResult.wad.drugs && Number(pollResult.wad.drugs) >= videoThreshold)
                     )) {
                     reasons.push("잔인하거나 위험한 콘텐츠");
                   }
