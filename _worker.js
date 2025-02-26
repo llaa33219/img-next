@@ -168,7 +168,13 @@ export default {
                 },
                 body: file
               });
-              const streamUploadResult = await streamUploadResponse.json();
+              const streamUploadText = await streamUploadResponse.text();
+              let streamUploadResult;
+              try {
+                streamUploadResult = JSON.parse(streamUploadText.trim());
+              } catch (e) {
+                throw new Error("Cloudflare Stream 업로드 실패: JSON 파싱 오류: " + e.message + " - 응답: " + streamUploadText);
+              }
               if (!streamUploadResponse.ok || !streamUploadResult.result || !streamUploadResult.result.uid) {
                 throw new Error("Cloudflare Stream 업로드 실패");
               }
