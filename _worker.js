@@ -14,6 +14,59 @@ export default {
         return btoa(binary);
       };
   
+      // MP4 영상 파일에서 길이(초)를 추출하는 함수 (MP4 포맷 기준)
+      async function getVideoDuration(file) {
+        try {
+          const buffer = await file.arrayBuffer();
+          const view = new DataView(buffer);
+          const length = buffer.byteLength;
+          let pos = 0;
+          while (pos < length) {
+            if (pos + 8 > length) break;
+            const size = view.getUint32(pos);
+            const type = String.fromCharCode(
+              view.getUint8(pos + 4),
+              view.getUint8(pos + 5),
+              view.getUint8(pos + 6),
+              view.getUint8(pos + 7)
+            );
+            if (type === "moov") {
+              const moovEnd = pos + size;
+              let pos2 = pos + 8;
+              while (pos2 < moovEnd) {
+                if (pos2 + 8 > moovEnd) break;
+                const boxSize = view.getUint32(pos2);
+                const boxType = String.fromCharCode(
+                  view.getUint8(pos2 + 4),
+                  view.getUint8(pos2 + 5),
+                  view.getUint8(pos2 + 6),
+                  view.getUint8(pos2 + 7)
+                );
+                if (boxType === "mvhd") {
+                  const version = view.getUint8(pos2 + 8);
+                  let timescale, duration;
+                  if (version === 1) {
+                    timescale = view.getUint32(pos2 + 20);
+                    const high = view.getUint32(pos2 + 24);
+                    const low = view.getUint32(pos2 + 28);
+                    duration = high * Math.pow(2, 32) + low;
+                  } else {
+                    timescale = view.getUint32(pos2 + 12);
+                    duration = view.getUint32(pos2 + 16);
+                  }
+                  return duration / timescale;
+                }
+                pos2 += boxSize;
+              }
+            }
+            pos += size;
+          }
+          return null;
+        } catch (e) {
+          return null;
+        }
+      }
+  
       // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행)
       if (request.method === 'POST' && url.pathname === '/upload') {
         try {
@@ -21,59 +74,6 @@ export default {
           const files = formData.getAll('file');
           if (!files || files.length === 0) {
             return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
-          }
-  
-          // 영상 파일의 길이(초)를 추출하는 함수 (MP4 포맷 기준)
-          async function getVideoDuration(file) {
-            try {
-              const buffer = await file.arrayBuffer();
-              const view = new DataView(buffer);
-              const length = buffer.byteLength;
-              let pos = 0;
-              while (pos < length) {
-                if (pos + 8 > length) break;
-                const size = view.getUint32(pos);
-                const type = String.fromCharCode(
-                  view.getUint8(pos + 4),
-                  view.getUint8(pos + 5),
-                  view.getUint8(pos + 6),
-                  view.getUint8(pos + 7)
-                );
-                if (type === "moov") {
-                  const moovEnd = pos + size;
-                  let pos2 = pos + 8;
-                  while (pos2 < moovEnd) {
-                    if (pos2 + 8 > moovEnd) break;
-                    const boxSize = view.getUint32(pos2);
-                    const boxType = String.fromCharCode(
-                      view.getUint8(pos2 + 4),
-                      view.getUint8(pos2 + 5),
-                      view.getUint8(pos2 + 6),
-                      view.getUint8(pos2 + 7)
-                    );
-                    if (boxType === "mvhd") {
-                      const version = view.getUint8(pos2 + 8);
-                      let timescale, duration;
-                      if (version === 1) {
-                        timescale = view.getUint32(pos2 + 20);
-                        const high = view.getUint32(pos2 + 24);
-                        const low = view.getUint32(pos2 + 28);
-                        duration = high * Math.pow(2, 32) + low;
-                      } else {
-                        timescale = view.getUint32(pos2 + 12);
-                        duration = view.getUint32(pos2 + 16);
-                      }
-                      return duration / timescale;
-                    }
-                    pos2 += boxSize;
-                  }
-                }
-                pos += size;
-              }
-              return null;
-            } catch (e) {
-              return null;
-            }
           }
   
           // 1. 검열 단계: 모든 파일에 대해 검열 API 호출 (검열 통과 못하면 업로드 중단)
@@ -139,7 +139,12 @@ export default {
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
-              const duration = await getVideoDuration(file);
+              let duration;
+              try {
+                duration = await getVideoDuration(file);
+              } catch (e) {
+                duration = null;
+              }
   
               if (duration !== null && duration < 60) {
                 // 1) 1분 미만인 영상: 동기 API
