@@ -158,18 +158,31 @@ export default {
               }
               const effectiveDuration = Math.min(duration, 30);
   
-              // Cloudflare Stream 업로드
-              const streamUploadResponse = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream?direct_user=true`, {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`
-                },
-                body: file
-              });
-              const streamUploadResult = await streamUploadResponse.json();
-              if (!streamUploadResponse.ok || !streamUploadResult.result || !streamUploadResult.result.uid) {
-                throw new Error("Cloudflare Stream 업로드 실패");
+              // Cloudflare Stream 업로드 (Content-Type 추가 & 상세 에러 메시지 로깅)
+              const streamUploadResponse = await fetch(
+                `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream?direct_user=true`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`,
+                    'Content-Type': file.type || 'application/octet-stream'
+                  },
+                  body: file
+                }
+              );
+              // 응답 전체 텍스트 파싱(에러 시 메시지 로깅을 위해)
+              const streamUploadText = await streamUploadResponse.text();
+              let streamUploadResult;
+              try {
+                streamUploadResult = JSON.parse(streamUploadText);
+              } catch (e) {
+                throw new Error(`Cloudflare Stream 업로드 실패 - JSON 파싱 오류: ${streamUploadText}`);
               }
+  
+              if (!streamUploadResponse.ok || !streamUploadResult.result || !streamUploadResult.result.uid) {
+                throw new Error(`Cloudflare Stream 업로드 실패 - 응답: ${streamUploadText}`);
+              }
+  
               const videoId = streamUploadResult.result.uid;
   
               // Cloudflare Stream의 영상 처리 완료 대기
