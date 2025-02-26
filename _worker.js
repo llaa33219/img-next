@@ -14,7 +14,7 @@ export default {
         return btoa(binary);
       };
   
-      // MP4 파일 길이 파싱
+      // MP4 파일에서 mvhd atom을 파싱해 영상 길이(초) 추정
       const parseMp4Duration = (buffer) => {
         try {
           const view = new DataView(buffer);
@@ -60,7 +60,7 @@ export default {
         }
       };
   
-      // Cloudflare Stream 처리 완료 대기
+      // Cloudflare Stream의 영상 처리 완료 대기
       const waitForStreamProcessing = async (videoId) => {
         const maxAttempts = 5;
         const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -83,7 +83,7 @@ export default {
         throw new Error("Cloudflare Stream video processing timeout");
       };
   
-      // 업로드 처리
+      // 업로드 처리 (POST /upload)
       if (request.method === 'POST' && url.pathname === '/upload') {
         try {
           const formData = await request.formData();
@@ -92,7 +92,7 @@ export default {
             return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
           }
   
-          // 검열
+          // 1. 검열
           for (const file of files) {
             if (file.type.startsWith('image/')) {
               // 이미지 검열
@@ -110,7 +110,8 @@ export default {
               } catch (e) {
                 fileForCensorship = file;
               }
-              // Sightengine
+  
+              // Sightengine 검열
               const sightForm = new FormData();
               sightForm.append('media', fileForCensorship.slice(0, fileForCensorship.size, fileForCensorship.type), 'upload');
               sightForm.append('models', 'nudity,wad,offensive');
@@ -139,8 +140,9 @@ export default {
               if (reasons.length > 0) {
                 return new Response(JSON.stringify({ success: false, error: `검열됨: ${reasons.join(', ')}` }), { status: 400 });
               }
+  
             } else if (file.type.startsWith('video/')) {
-              // 영상 프레임 추출용 Cloudflare Stream
+              // 영상 검열: 프레임 추출용 Cloudflare Stream direct_upload
               let duration = null;
               try {
                 const headerBuffer = await file.slice(0, 1024 * 1024).arrayBuffer();
@@ -153,7 +155,7 @@ export default {
               if (!duration || duration <= 0) duration = 1;
               const effectiveDuration = Math.min(duration, 30);
   
-              // 1) direct_upload 초기화
+              // 1) direct_upload 초기화 (maxDurationSeconds 필수)
               const directUploadInitResponse = await fetch(
                 `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream/direct_upload`,
                 {
@@ -165,10 +167,7 @@ export default {
                   },
                   body: JSON.stringify({
                     meta: { name: file.name },
-                    // 아래는 필요에 따라 추가/수정 가능
-                    // allowedOrigins: ["example.com"],
-                    // maxDurationSeconds: effectiveDuration,
-                    // requireSignedURLs: false,
+                    maxDurationSeconds: 10800, // 3시간 예시 (1~21600 범위)
                     thumbnailTimestampPct: 0
                   })
                 }
@@ -185,7 +184,7 @@ export default {
               }
               const { uploadURL, uid: videoId } = initResult.result;
   
-              // 2) PUT 업로드 (Content-Type 헤더 제거)
+              // 2) PUT 업로드 (Content-Type 헤더 없이)
               const fileUploadResponse = await fetch(uploadURL, {
                 method: 'PUT',
                 body: file
@@ -220,7 +219,7 @@ export default {
                 return new Response(JSON.stringify({ success: false, error: `프레임 추출 실패: ${e.message}` }), { status: 400 });
               }
   
-              // 5) 프레임 검열
+              // 5) Sightengine 검열
               const censorshipPromises = frameBlobs.map(frameBlob => {
                 const sightForm = new FormData();
                 sightForm.append('media', frameBlob.slice(0, frameBlob.size, frameBlob.type), 'upload');
@@ -248,7 +247,7 @@ export default {
                 return new Response(JSON.stringify({ success: false, error: `검열 API 요청 실패: ${e.message}` }), { status: 400 });
               }
   
-              // 6) 프레임 검열 결과 취합
+              // 6) 검열 결과 취합
               let maxNudity = 0;
               let nudityFlag = false;
               let maxOffensive = 0;
@@ -284,7 +283,7 @@ export default {
             }
           }
   
-          // 2. 검열 통과 후 R2에 저장
+          // 2. 검열 통과 시 R2에 원본 파일 저장 (이미지/영상 모두)
           let codes = [];
           const generateRandomCode = (length = 8) => {
             const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -566,6 +565,7 @@ export default {
         return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
       }
     
+      // 정적 파일
       return env.ASSETS.fetch(request);
     }
 };
