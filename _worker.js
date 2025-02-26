@@ -287,15 +287,16 @@ export default {
   
           // 2. 모든 파일이 검열 통과하면 업로드 진행 (각 파일 별로 R2에 저장)
           let codes = [];
+          const generateRandomCode = (length = 8) => {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            let result = '';
+            for (let i = 0; i < length; i++) {
+              result += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return result;
+          };
+  
           for (const file of files) {
-            const generateRandomCode = (length = 8) => {
-              const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-              let result = '';
-              for (let i = 0; i < length; i++) {
-                result += chars.charAt(Math.floor(Math.random() * chars.length));
-              }
-              return result;
-            };
             let code;
             for (let i = 0; i < 5; i++) {
               code = generateRandomCode(8);
@@ -309,8 +310,34 @@ export default {
             await env.IMAGES.put(code, fileBuffer, {
               httpMetadata: { contentType: file.type }
             });
+  
+            // 영상 파일인 경우 Cloudflare Stream copy ingestion 실행
+            if (file.type.startsWith('video/')) {
+              const videoUrl = `https://${url.host}/${code}?raw=1`;
+              const copyResponse = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream/copy`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`,
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json'
+                },
+                body: JSON.stringify({ url: videoUrl, meta: { name: file.name } })
+              });
+              const copyResult = await copyResponse.json();
+              if (!copyResponse.ok || !copyResult.result || !copyResult.result.uid) {
+                throw new Error("Cloudflare Stream 업로드 실패");
+              }
+              const videoId = copyResult.result.uid;
+              await waitForStreamProcessing(videoId);
+              const videoInfo = JSON.stringify({ video: true, uid: videoId });
+              await env.IMAGES.put(code, new TextEncoder().encode(videoInfo), {
+                httpMetadata: { contentType: 'application/json' }
+              });
+            }
+  
             codes.push(code);
           }
+  
           const urlCodes = codes.join(",");
           const imageUrl = `https://${url.host}/${urlCodes}`;
           return new Response(JSON.stringify({ success: true, url: imageUrl }), {
@@ -333,17 +360,31 @@ export default {
           return new Response(object.body, { headers });
         }
         const codes = url.pathname.slice(1).split(",");
-        // 각 코드에 대해 메타데이터를 가져와 미디어 타입에 따라 렌더링
         const objects = await Promise.all(codes.map(async code => {
           const object = await env.IMAGES.get(code);
           return { code, object };
         }));
         let mediaTags = "";
         for (const { code, object } of objects) {
-          if (object && object.httpMetadata && object.httpMetadata.contentType && object.httpMetadata.contentType.startsWith('video/')) {
-            mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls onclick="toggleZoom(this)"></video>\n`;
-          } else {
-            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+          if (object && object.httpMetadata) {
+            const ct = object.httpMetadata.contentType || "";
+            if (ct === 'application/json') {
+              const text = await object.text();
+              try {
+                const info = JSON.parse(text);
+                if (info.video && info.uid) {
+                  mediaTags += `<video src="https://videodelivery.net/${info.uid}/" controls onclick="toggleZoom(this)"></video>\n`;
+                  continue;
+                }
+              } catch (e) {
+                // JSON 파싱 실패 시 fallback 처리
+              }
+            }
+            if (ct.startsWith('video/')) {
+              mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls onclick="toggleZoom(this)"></video>\n`;
+            } else {
+              mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+            }
           }
         }
         const htmlContent = `<!DOCTYPE html>
@@ -364,13 +405,11 @@ export default {
         padding: 20px;
         overflow: auto;
       }
-    
       .upload-container {
         display: flex;
         flex-direction: column;
         align-items: center;
       }
-    
       button {
         background-color: #007BFF;
         color: white;
@@ -387,24 +426,20 @@ export default {
         font-size: 18px;
         text-align: center;
       }
-    
       button:hover {
         background-color: #005BDD;
         transform: translateY(2px);
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
       }
-    
       button:active {
         background-color: #0026a3;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
       }
-    
       #fileNameDisplay {
         font-size: 16px;
         margin-top: 10px;
         color: #333;
       }
-    
       #linkBox {
         width: 500px;
         height: 40px;
@@ -414,7 +449,6 @@ export default {
         text-align: center;
         border-radius: 14px;
       }
-    
       .copy-button {
         background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center;
         background-size: contain;
@@ -425,14 +459,11 @@ export default {
         margin-left: 10px;
         vertical-align: middle;
       }
-    
       .link-container {
         display: flex;
         justify-content: center;
         align-items: center;
       }
-      
-      /* 기존 스타일 유지 */
       #imageContainer img,
       #imageContainer video {
         width: 40vw;
@@ -446,8 +477,6 @@ export default {
         object-fit: contain;
         cursor: zoom-in;
       }
-    
-      /* 가로가 긴 경우 */
       #imageContainer img.landscape,
       #imageContainer video.landscape {
         width: 40vw;
@@ -455,8 +484,6 @@ export default {
         max-width: 40vw;
         cursor: zoom-in;
       }
-    
-      /* 세로가 긴 경우 */
       #imageContainer img.portrait,
       #imageContainer video.portrait {
         width: auto;
@@ -464,8 +491,6 @@ export default {
         max-width: 40vw;
         cursor: zoom-in;
       }
-    
-      /* 확대된 상태의 가로가 긴 경우 */
       #imageContainer img.expanded.landscape,
       #imageContainer video.expanded.landscape {
         width: 80vw;
@@ -474,8 +499,6 @@ export default {
         max-height: 100vh;
         cursor: zoom-out;
       }
-    
-      /* 확대된 상태의 세로가 긴 경우 */
       #imageContainer img.expanded.portrait,
       #imageContainer video.expanded.portrait {
         width: auto;
@@ -484,11 +507,9 @@ export default {
         max-height: 100vh;
         cursor: zoom-out;
       }
-    
       .container {
         text-align: center;
       }
-    
       .header-content {
         display: flex;
         align-items: center;
@@ -497,12 +518,10 @@ export default {
         font-size: 30px;
         text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
       }
-    
       .header-content img {
         margin-right: 20px;
         border-radius: 14px;
       }
-    
       .toggle-button {
         background-color: #28a745;
         color: white;
@@ -517,19 +536,15 @@ export default {
         font-size: 24px;
         margin-left: 20px;
       }
-    
       .hidden {
         display: none;
       }
-    
       .title-img-desktop {
         display: block;
       }
-    
       .title-img-mobile {
         display: none;
       }
-    
       @media (max-width: 768px) {
         button {
           width: 300px;
@@ -553,7 +568,7 @@ export default {
   </head>
   <body>
     <div class="header-content">
-      <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" style="width: 120px; height: auto; cursor: pointer;" onclick="location.href='/';">
+      <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" style="width: 120px; height: auto; cursor: pointer;" onclick="location.href='/'">
       <h1>이미지 공유</h1>
     </div>
     <div id="imageContainer">
