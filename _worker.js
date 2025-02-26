@@ -1,7 +1,6 @@
 export default {
     async fetch(request, env, ctx) {
       const url = new URL(request.url);
-      // 디버깅: 들어온 요청의 기본 정보를 콘솔에 출력합니다.
       console.log("Incoming Request:", {
         method: request.method,
         url: request.url,
@@ -120,7 +119,7 @@ export default {
               }
             } else if (file.type.startsWith('video/')) {
               // -------------------------------------------
-              // 동영상 검열 (비동기 API 사용)
+              // 동영상 검열 (오직 동기 API 사용 및 1분 이상은 59초 단위로 분할)
               // -------------------------------------------
               // 1) 용량 체크: 50MB 초과면 경고
               if (file.size > 50 * 1024 * 1024) {
@@ -130,61 +129,32 @@ export default {
               // 2) 영상 길이(초) 확인 (mp4 파일 기준)
               let videoDuration = await getMP4Duration(file);
               if (videoDuration === null) {
+                // duration 추출에 실패하면 전체 파일로 단일 검열 진행
                 videoDuration = 0;
               }
   
               const videoThreshold = 0.5;
   
               if (videoDuration < 60) {
-                // 1분 미만이면 전체 파일을 대상으로 비동기 API 호출 후 폴링
+                // 1분 미만이면 전체 파일을 한 번에 동기 API로 처리
                 const sightForm = new FormData();
                 sightForm.append('media', file, 'upload');
                 sightForm.append('models', 'nudity,wad,offensive');
                 sightForm.append('api_user', env.SIGHTENGINE_API_USER);
                 sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
-                const initResponse = await fetch('https://api.sightengine.com/1.0/video/check.json', {
+                const sightResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                   method: 'POST',
                   body: sightForm
                 });
-                const initResult = await initResponse.json();
-  
-                if (!initResult || initResult.status !== 'success') {
-                  return new Response(JSON.stringify({ success: false, error: "비디오 검열 시작 오류" }), { status: 400 });
-                }
-  
-                const jobId = initResult.job.id;
-                let pollResult;
-                let totalWait = 0;
-                const POLL_INTERVAL = 5000;
-                const MAX_WAIT = 30000;
-  
-                while (true) {
-                  await new Promise(r => setTimeout(r, POLL_INTERVAL));
-                  totalWait += POLL_INTERVAL;
-  
-                  const pollResponse = await fetch(
-                    `https://api.sightengine.com/1.0/video/check.json?job_id=${jobId}&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`
-                  );
-                  pollResult = await pollResponse.json();
-  
-                  if (pollResult.status === 'finished') {
-                    break;
-                  }
-                  if (pollResult.status === 'failure') {
-                    return new Response(JSON.stringify({ success: false, error: "비디오 분석 실패" }), { status: 400 });
-                  }
-                  if (totalWait >= MAX_WAIT) {
-                    return new Response(JSON.stringify({ success: false, error: "검열 시간 초과" }), { status: 400 });
-                  }
-                }
+                const sightResult = await sightResponse.json();
   
                 let reasons = [];
                 let frames = [];
-                if (pollResult.data && pollResult.data.frames) {
-                  frames = Array.isArray(pollResult.data.frames) ? pollResult.data.frames : [pollResult.data.frames];
-                } else if (pollResult.frames) {
-                  frames = Array.isArray(pollResult.frames) ? pollResult.frames : [pollResult.frames];
+                if (sightResult.data && sightResult.data.frames) {
+                  frames = Array.isArray(sightResult.data.frames) ? sightResult.data.frames : [sightResult.data.frames];
+                } else if (sightResult.frames) {
+                  frames = Array.isArray(sightResult.frames) ? sightResult.frames : [sightResult.frames];
                 }
   
                 if (frames.length > 0) {
@@ -211,21 +181,21 @@ export default {
                     }
                   }
                 } else {
-                  if (pollResult.data && pollResult.data.nudity) {
-                    for (const key in pollResult.data.nudity) {
+                  if (sightResult.data && sightResult.data.nudity) {
+                    for (const key in sightResult.data.nudity) {
                       if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                      if (Number(pollResult.data.nudity[key]) >= videoThreshold) {
+                      if (Number(sightResult.data.nudity[key]) >= videoThreshold) {
                         reasons.push("선정적 콘텐츠");
                         break;
                       }
                     }
                   }
-                  if (pollResult.data && pollResult.data.offensive && pollResult.data.offensive.prob !== undefined && Number(pollResult.data.offensive.prob) >= videoThreshold) {
+                  if (sightResult.data && sightResult.data.offensive && sightResult.data.offensive.prob !== undefined && Number(sightResult.data.offensive.prob) >= videoThreshold) {
                     reasons.push("욕설/모욕적 콘텐츠");
                   }
-                  if (pollResult.data && pollResult.data.wad) {
-                    for (const key in pollResult.data.wad) {
-                      if (Number(pollResult.data.wad[key]) >= videoThreshold) {
+                  if (sightResult.data && sightResult.data.wad) {
+                    for (const key in sightResult.data.wad) {
+                      if (Number(sightResult.data.wad[key]) >= videoThreshold) {
                         reasons.push("잔인하거나 위험한 콘텐츠");
                         break;
                       }
@@ -236,7 +206,7 @@ export default {
                   return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
               } else {
-                // 1분 이상이면 59초 단위로 분할하여 각 구간마다 비동기 API 호출 및 폴링
+                // 1분 이상이면 59초 단위로 분할하여 각각 동기 API 호출
                 const numSegments = Math.ceil(videoDuration / 59);
                 const totalSize = file.size;
                 let reasons = [];
@@ -246,7 +216,10 @@ export default {
                   const segmentEndTime = Math.min((i + 1) * 59, videoDuration);
                   // 파일 전체 duration 대비 비율로 바이트 범위를 계산 (상수 비트레이트 가정)
                   const startByte = Math.floor((segmentStartTime / videoDuration) * totalSize);
-                  const endByte = Math.floor((segmentEndTime / videoDuration) * totalSize);
+                  let endByte = Math.ceil((segmentEndTime / videoDuration) * totalSize);
+                  if (endByte <= startByte) {
+                    endByte = startByte + 1;
+                  }
                   const segmentBlob = file.slice(startByte, endByte, file.type);
   
                   const segmentForm = new FormData();
@@ -255,48 +228,19 @@ export default {
                   segmentForm.append('api_user', env.SIGHTENGINE_API_USER);
                   segmentForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
-                  const initResponse = await fetch('https://api.sightengine.com/1.0/video/check.json', {
+                  const segmentResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                     method: 'POST',
                     body: segmentForm
                   });
-                  const initResult = await initResponse.json();
-  
-                  if (!initResult || initResult.status !== 'success') {
-                    return new Response(JSON.stringify({ success: false, error: "비디오 검열 시작 오류" }), { status: 400 });
-                  }
-  
-                  const jobId = initResult.job.id;
-                  let pollResult;
-                  let totalWait = 0;
-                  const POLL_INTERVAL = 5000;
-                  const MAX_WAIT = 30000;
-  
-                  while (true) {
-                    await new Promise(r => setTimeout(r, POLL_INTERVAL));
-                    totalWait += POLL_INTERVAL;
-  
-                    const pollResponse = await fetch(
-                      `https://api.sightengine.com/1.0/video/check.json?job_id=${jobId}&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`
-                    );
-                    pollResult = await pollResponse.json();
-  
-                    if (pollResult.status === 'finished') {
-                      break;
-                    }
-                    if (pollResult.status === 'failure') {
-                      return new Response(JSON.stringify({ success: false, error: "비디오 분석 실패" }), { status: 400 });
-                    }
-                    if (totalWait >= MAX_WAIT) {
-                      return new Response(JSON.stringify({ success: false, error: "검열 시간 초과" }), { status: 400 });
-                    }
-                  }
+                  const segmentResult = await segmentResponse.json();
   
                   let frames = [];
-                  if (pollResult.data && pollResult.data.frames) {
-                    frames = Array.isArray(pollResult.data.frames) ? pollResult.data.frames : [pollResult.data.frames];
-                  } else if (pollResult.frames) {
-                    frames = Array.isArray(pollResult.frames) ? pollResult.frames : [pollResult.frames];
+                  if (segmentResult.data && segmentResult.data.frames) {
+                    frames = Array.isArray(segmentResult.data.frames) ? segmentResult.data.frames : [segmentResult.data.frames];
+                  } else if (segmentResult.frames) {
+                    frames = Array.isArray(segmentResult.frames) ? segmentResult.frames : [segmentResult.frames];
                   }
+  
                   if (frames.length > 0) {
                     for (const frame of frames) {
                       if (frame.nudity) {
@@ -321,21 +265,21 @@ export default {
                       }
                     }
                   } else {
-                    if (pollResult.data && pollResult.data.nudity) {
-                      for (const key in pollResult.data.nudity) {
+                    if (segmentResult.data && segmentResult.data.nudity) {
+                      for (const key in segmentResult.data.nudity) {
                         if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                        if (Number(pollResult.data.nudity[key]) >= videoThreshold) {
+                        if (Number(segmentResult.data.nudity[key]) >= videoThreshold) {
                           reasons.push("선정적 콘텐츠");
                           break;
                         }
                       }
                     }
-                    if (pollResult.data && pollResult.data.offensive && pollResult.data.offensive.prob !== undefined && Number(pollResult.data.offensive.prob) >= videoThreshold) {
+                    if (segmentResult.data && segmentResult.data.offensive && segmentResult.data.offensive.prob !== undefined && Number(segmentResult.data.offensive.prob) >= videoThreshold) {
                       reasons.push("욕설/모욕적 콘텐츠");
                     }
-                    if (pollResult.data && pollResult.data.wad) {
-                      for (const key in pollResult.data.wad) {
-                        if (Number(pollResult.data.wad[key]) >= videoThreshold) {
+                    if (segmentResult.data && segmentResult.data.wad) {
+                      for (const key in segmentResult.data.wad) {
+                        if (Number(segmentResult.data.wad[key]) >= videoThreshold) {
                           reasons.push("잔인하거나 위험한 콘텐츠");
                           break;
                         }
