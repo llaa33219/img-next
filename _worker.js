@@ -59,6 +59,26 @@ export default {
           return null;
         }
       };
+
+      // 헬퍼 함수: Cloudflare Stream의 영상 처리가 완료될 때까지 polling
+      const waitForStreamProcessing = async (videoId) => {
+        const maxAttempts = 5;
+        const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          const assetResponse = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream/${videoId}`, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`
+            }
+          });
+          const assetData = await assetResponse.json();
+          if (assetData.result && assetData.result.status === "ready") {
+            return;
+          }
+          await delay(2000);
+        }
+        throw new Error("Cloudflare Stream video processing timeout");
+      };
   
       // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행)
       if (request.method === 'POST' && url.pathname === '/upload') {
@@ -121,12 +141,9 @@ export default {
               }
             } else if (file.type.startsWith('video/')) {
               // -------------------------------------------
-              // 영상 검열: 영상 검열 API를 제거하고 이미지 검열 API로 대체
-              // 영상에서 동일한 간격으로 프레임 10개를 추출하여 병렬 처리 후,
+              // 영상 검열: Cloudflare Stream을 사용하여 프레임 추출 후,
               // 각 프레임의 결과 중 최대값을 검사합니다.
               // -------------------------------------------
-              const videoThreshold = 0.5;
-              // 영상 길이 확인 (MP4인 경우 mvhd atom 파싱)
               let duration = null;
               try {
                 const headerBuffer = await file.slice(0, 1024 * 1024).arrayBuffer();
@@ -139,24 +156,32 @@ export default {
               if (duration === null || duration <= 0) {
                 duration = 1; // fallback 값
               }
-              // 30초 이상인 경우, 첫 30초 내에서만 프레임 추출
               const effectiveDuration = Math.min(duration, 30);
   
-              // 영상 전체를 base64 data URL로 변환 (썸네일 추출용)
-              const videoBuffer = await file.arrayBuffer();
-              const videoBase64 = arrayBufferToBase64(videoBuffer);
-              const videoDataUrl = `data:${file.type};base64,${videoBase64}`;
+              // Cloudflare Stream 업로드
+              const streamUploadResponse = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream?direct_user=true`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`
+                },
+                body: file
+              });
+              const streamUploadResult = await streamUploadResponse.json();
+              if (!streamUploadResponse.ok || !streamUploadResult.result || !streamUploadResult.result.uid) {
+                throw new Error("Cloudflare Stream 업로드 실패");
+              }
+              const videoId = streamUploadResult.result.uid;
+  
+              // Cloudflare Stream의 영상 처리 완료 대기
+              await waitForStreamProcessing(videoId);
   
               const frameCount = 10;
               const framePromises = [];
               for (let i = 0; i < frameCount; i++) {
                 const timestamp = (i / (frameCount - 1)) * effectiveDuration;
-                // Cloudflare의 video thumbnail 기능을 가정합니다.
-                const reqForThumbnail = new Request(videoDataUrl, {
-                  cf: { video: { thumbnail: true, time: timestamp, width: 600, height: 600, fit: "inside" } }
-                });
+                const thumbnailUrl = `https://videodelivery.net/${videoId}/thumbnails/thumbnail.jpg?time=${timestamp}&width=600&height=600&fit=inside`;
                 framePromises.push(
-                  fetch(reqForThumbnail).then(async res => {
+                  fetch(thumbnailUrl).then(async res => {
                     if (!res.ok) {
                       const text = await res.text();
                       throw new Error(`프레임 추출 실패: ${res.status} ${res.statusText}: ${text}`);
@@ -237,13 +262,13 @@ export default {
               }
   
               let reasons = [];
-              if (nudityFlag || maxNudity >= videoThreshold) {
+              if (nudityFlag || maxNudity >= 0.5) {
                 reasons.push("선정적 콘텐츠");
               }
-              if (maxOffensive >= videoThreshold) {
+              if (maxOffensive >= 0.5) {
                 reasons.push("욕설/모욕적 콘텐츠");
               }
-              if (maxWad >= videoThreshold) {
+              if (maxWad >= 0.5) {
                 reasons.push("잔인하거나 위험한 콘텐츠");
               }
               if (reasons.length > 0) {
