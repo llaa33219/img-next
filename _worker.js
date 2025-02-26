@@ -26,7 +26,7 @@ export default {
           for (const file of files) {
             if (file.type.startsWith('image/')) {
               // -------------------------------------------
-              // 이미지 검열 (기존 로직 그대로)
+              // 이미지 검열
               // -------------------------------------------
               let fileForCensorship = file;
               try {
@@ -59,105 +59,172 @@ export default {
   
               let reasons = [];
               // ---- 검열 기준 강화 ----
-              if (sightResult.nudity) {
-                const { is_nude, raw, partial } = sightResult.nudity;
-                if (
-                  is_nude === true ||
-                  (raw && raw > 0.3) ||
-                  (partial && partial > 0.3)
-                ) {
-                  reasons.push("선정적 콘텐츠");
+              if (sightResult.frames && Array.isArray(sightResult.frames)) {
+                for (const frame of sightResult.frames) {
+                  if (frame.nudity) {
+                    const { is_nude, raw, partial } = frame.nudity;
+                    if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
+                      if (!reasons.includes("선정적 콘텐츠")) reasons.push("선정적 콘텐츠");
+                    }
+                  }
+                  if (frame.offensive && frame.offensive.prob > 0.3) {
+                    if (!reasons.includes("욕설/모욕적 콘텐츠")) reasons.push("욕설/모욕적 콘텐츠");
+                  }
+                  if (frame.wad && (frame.wad.weapon > 0.3 || frame.wad.alcohol > 0.3 || frame.wad.drugs > 0.3)) {
+                    if (!reasons.includes("잔인하거나 위험한 콘텐츠")) reasons.push("잔인하거나 위험한 콘텐츠");
+                  }
+                }
+              } else {
+                if (sightResult.nudity) {
+                  const { is_nude, raw, partial } = sightResult.nudity;
+                  if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
+                    reasons.push("선정적 콘텐츠");
+                  }
+                }
+                if (sightResult.offensive && sightResult.offensive.prob > 0.3) {
+                  reasons.push("욕설/모욕적 콘텐츠");
+                }
+                if (sightResult.wad && (sightResult.wad.weapon > 0.3 || sightResult.wad.alcohol > 0.3 || sightResult.wad.drugs > 0.3)) {
+                  reasons.push("잔인하거나 위험한 콘텐츠");
                 }
               }
-              if (sightResult.offensive && sightResult.offensive.prob > 0.3) {
-                reasons.push("욕설/모욕적 콘텐츠");
-              }
-              if (sightResult.wad && (
-                sightResult.wad.weapon > 0.3 ||
-                sightResult.wad.alcohol > 0.3 ||
-                sightResult.wad.drugs > 0.3
-              )) {
-                reasons.push("잔인하거나 위험한 콘텐츠");
-              }
+              // -----------------------
               if (reasons.length > 0) {
                 return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
             } else if (file.type.startsWith('video/')) {
               // -------------------------------------------
-              // 동영상 검열 (전체 영상 분석 방식)
+              // 동영상 검열 (짧은/긴 분기) + 검열 기준 강화
               // -------------------------------------------
-              // 항상 비동기 API를 사용하여 보다 많은 프레임(0.01초 간격)을 분석하도록 함
+              const MAX_SYNC_SIZE = 40 * 1024 * 1024; // 40MB 기준
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
-              sightForm.append('frame_interval', '0.01'); // 0.01초 간격으로 최대한 많은 프레임 분석
               sightForm.append('models', 'nudity,wad,offensive');
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
-              // 비동기 API 사용 (모든 영상에 대해)
-              const initResponse = await fetch('https://api.sightengine.com/1.0/video/check.json', {
-                method: 'POST',
-                body: sightForm
-              });
-              const initResult = await initResponse.json();
+              if (file.size < MAX_SYNC_SIZE) {
+                // 1) 비교적 작은(짧은) 영상: 동기 API
+                const sightResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
+                  method: 'POST',
+                  body: sightForm
+                });
+                const sightResult = await sightResponse.json();
   
-              if (!initResult || initResult.status !== 'success') {
-                return new Response(JSON.stringify({ success: false, error: "비디오 검열 시작 오류" }), { status: 400 });
-              }
-  
-              // job_id를 받아 폴링 (최대 60초 대기)
-              const jobId = initResult.job.id;
-              let pollResult;
-              let totalWait = 0;
-              const POLL_INTERVAL = 5000;  // 5초 간격
-              const MAX_WAIT = 60000;      // 최대 60초 대기
-              while (true) {
-                await new Promise(r => setTimeout(r, POLL_INTERVAL));
-                totalWait += POLL_INTERVAL;
-  
-                const pollResponse = await fetch(
-                  `https://api.sightengine.com/1.0/video/check.json?job_id=${jobId}&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`
-                );
-                pollResult = await pollResponse.json();
-  
-                // 완료 시 탈출
-                if (pollResult.status === 'finished') {
-                  break;
+                let reasons = [];
+                // ---- 검열 기준 강화 ----
+                if (sightResult.frames && Array.isArray(sightResult.frames)) {
+                  for (const frame of sightResult.frames) {
+                    if (frame.nudity) {
+                      const { is_nude, raw, partial } = frame.nudity;
+                      if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
+                        if (!reasons.includes("선정적 콘텐츠")) reasons.push("선정적 콘텐츠");
+                      }
+                    }
+                    if (frame.offensive && frame.offensive.prob > 0.3) {
+                      if (!reasons.includes("욕설/모욕적 콘텐츠")) reasons.push("욕설/모욕적 콘텐츠");
+                    }
+                    if (frame.wad && (frame.wad.weapon > 0.3 || frame.wad.alcohol > 0.3 || frame.wad.drugs > 0.3)) {
+                      if (!reasons.includes("잔인하거나 위험한 콘텐츠")) reasons.push("잔인하거나 위험한 콘텐츠");
+                    }
+                  }
+                } else {
+                  if (sightResult.nudity) {
+                    const { is_nude, raw, partial } = sightResult.nudity;
+                    if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
+                      reasons.push("선정적 콘텐츠");
+                    }
+                  }
+                  if (sightResult.offensive && sightResult.offensive.prob > 0.3) {
+                    reasons.push("욕설/모욕적 콘텐츠");
+                  }
+                  if (sightResult.wad && (sightResult.wad.weapon > 0.3 || sightResult.wad.alcohol > 0.3 || sightResult.wad.drugs > 0.3)) {
+                    reasons.push("잔인하거나 위험한 콘텐츠");
+                  }
                 }
-                // 실패 시 에러 처리
-                if (pollResult.status === 'failure') {
-                  return new Response(JSON.stringify({ success: false, error: "비디오 분석 실패" }), { status: 400 });
+                // -----------------------
+                if (reasons.length > 0) {
+                  return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
-                // 타임아웃 체크
-                if (totalWait >= MAX_WAIT) {
-                  return new Response(JSON.stringify({ success: false, error: "검열 시간 초과" }), { status: 400 });
-                }
-              }
   
-              let reasons = [];
-              if (pollResult.nudity) {
-                const { is_nude, raw, partial } = pollResult.nudity;
-                if (
-                  is_nude === true ||
-                  (raw && raw > 0.3) ||
-                  (partial && partial > 0.3)
-                ) {
-                  reasons.push("선정적 콘텐츠");
-                }
-              }
-              if (pollResult.offensive && pollResult.offensive.prob > 0.3) {
-                reasons.push("욕설/모욕적 콘텐츠");
-              }
-              if (pollResult.wad && (
-                pollResult.wad.weapon > 0.3 ||
-                pollResult.wad.alcohol > 0.3 ||
-                pollResult.wad.drugs > 0.3
-              )) {
-                reasons.push("잔인하거나 위험한 콘텐츠");
-              }
+              } else {
+                // 2) 큰(길거나 용량 큰) 영상: 비동기 API + 폴링
+                const initResponse = await fetch('https://api.sightengine.com/1.0/video/check.json', {
+                  method: 'POST',
+                  body: sightForm
+                });
+                const initResult = await initResponse.json();
   
-              if (reasons.length > 0) {
-                return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
+                if (!initResult || initResult.status !== 'success') {
+                  return new Response(JSON.stringify({ success: false, error: "비디오 검열 시작 오류" }), { status: 400 });
+                }
+  
+                // job_id를 받아 폴링
+                const jobId = initResult.job.id;
+                let pollResult;
+                let totalWait = 0;
+                const POLL_INTERVAL = 5000;  // 5초 간격
+                const MAX_WAIT = 30000;      // 최대 30초 대기
+  
+                while (true) {
+                  await new Promise(r => setTimeout(r, POLL_INTERVAL));
+                  totalWait += POLL_INTERVAL;
+  
+                  const pollResponse = await fetch(
+                    `https://api.sightengine.com/1.0/video/check.json?job_id=${jobId}&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`
+                  );
+                  pollResult = await pollResponse.json();
+  
+                  // 완료 시 탈출
+                  if (pollResult.status === 'finished') {
+                    break;
+                  }
+                  // 실패 시 에러
+                  if (pollResult.status === 'failure') {
+                    return new Response(JSON.stringify({ success: false, error: "비디오 분석 실패" }), { status: 400 });
+                  }
+                  // 타임아웃
+                  if (totalWait >= MAX_WAIT) {
+                    return new Response(JSON.stringify({ success: false, error: "검열 시간 초과" }), { status: 400 });
+                  }
+                }
+  
+                // pollResult가 최종 결과
+                let reasons = [];
+                // ---- 검열 기준 강화 ----
+                if (pollResult.frames && Array.isArray(pollResult.frames)) {
+                  for (const frame of pollResult.frames) {
+                    if (frame.nudity) {
+                      const { is_nude, raw, partial } = frame.nudity;
+                      if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
+                        if (!reasons.includes("선정적 콘텐츠")) reasons.push("선정적 콘텐츠");
+                      }
+                    }
+                    if (frame.offensive && frame.offensive.prob > 0.3) {
+                      if (!reasons.includes("욕설/모욕적 콘텐츠")) reasons.push("욕설/모욕적 콘텐츠");
+                    }
+                    if (frame.wad && (frame.wad.weapon > 0.3 || frame.wad.alcohol > 0.3 || frame.wad.drugs > 0.3)) {
+                      if (!reasons.includes("잔인하거나 위험한 콘텐츠")) reasons.push("잔인하거나 위험한 콘텐츠");
+                    }
+                  }
+                } else {
+                  if (pollResult.nudity) {
+                    const { is_nude, raw, partial } = pollResult.nudity;
+                    if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
+                      reasons.push("선정적 콘텐츠");
+                    }
+                  }
+                  if (pollResult.offensive && pollResult.offensive.prob > 0.3) {
+                    reasons.push("욕설/모욕적 콘텐츠");
+                  }
+                  if (pollResult.wad && (pollResult.wad.weapon > 0.3 || pollResult.wad.alcohol > 0.3 || pollResult.wad.drugs > 0.3)) {
+                    reasons.push("잔인하거나 위험한 콘텐츠");
+                  }
+                }
+                // -----------------------
+                if (reasons.length > 0) {
+                  return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
+                }
               }
             }
           }
