@@ -158,12 +158,13 @@ export default {
               }
               const effectiveDuration = Math.min(duration, 30);
   
-              // Cloudflare Stream 업로드 (고객 하위 도메인 사용)
-              const streamUploadResponse = await fetch(`https://customer-8z0vdylu97ytcbll.cloudflarestream.com/?direct_upload=true`, {
+              // Cloudflare Stream 업로드 (고객 하위 도메인 사용 및 경로 변경, Accept 헤더 추가)
+              const streamUploadResponse = await fetch(`https://customer-8z0vdylu97ytcbll.cloudflarestream.com/direct_upload?direct_upload=true`, {
                 method: 'POST',
                 headers: {
                   'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`,
-                  'Content-Type': file.type
+                  'Content-Type': file.type,
+                  'Accept': 'application/json'
                 },
                 body: file
               });
