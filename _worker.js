@@ -229,34 +229,39 @@ export default {
                   return new Response(JSON.stringify({ success: false, error: "비디오 검열 시작 오류" }), { status: 400 });
                 }
   
-                // job_id를 받아 폴링
-                const jobId = initResult.job.id;
                 let pollResult;
-                let totalWait = 0;
-                const POLL_INTERVAL = 5000;  // 5초 간격
-                const MAX_WAIT = 30000;      // 최대 30초 대기
+                // job 객체가 있으면 비동기 폴링 진행, 없으면 initResult가 최종 결과로 간주
+                if (initResult.job && initResult.job.id) {
+                  const jobId = initResult.job.id;
+                  let totalWait = 0;
+                  const POLL_INTERVAL = 5000;  // 5초 간격
+                  const MAX_WAIT = 30000;      // 최대 30초 대기
   
-                while (true) {
-                  await new Promise(r => setTimeout(r, POLL_INTERVAL));
-                  totalWait += POLL_INTERVAL;
+                  while (true) {
+                    await new Promise(r => setTimeout(r, POLL_INTERVAL));
+                    totalWait += POLL_INTERVAL;
   
-                  const pollResponse = await fetch(
-                    `https://api.sightengine.com/1.0/video/check.json?job_id=${jobId}&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`
-                  );
-                  pollResult = await pollResponse.json();
+                    const pollResponse = await fetch(
+                      `https://api.sightengine.com/1.0/video/check.json?job_id=${jobId}&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`
+                    );
+                    pollResult = await pollResponse.json();
   
-                  // 완료 시 탈출
-                  if (pollResult.status === 'finished') {
-                    break;
+                    // 완료 시 탈출
+                    if (pollResult.status === 'finished') {
+                      break;
+                    }
+                    // 실패 시 에러
+                    if (pollResult.status === 'failure') {
+                      return new Response(JSON.stringify({ success: false, error: "비디오 분석 실패" }), { status: 400 });
+                    }
+                    // 타임아웃
+                    if (totalWait >= MAX_WAIT) {
+                      return new Response(JSON.stringify({ success: false, error: "검열 시간 초과" }), { status: 400 });
+                    }
                   }
-                  // 실패 시 에러
-                  if (pollResult.status === 'failure') {
-                    return new Response(JSON.stringify({ success: false, error: "비디오 분석 실패" }), { status: 400 });
-                  }
-                  // 타임아웃
-                  if (totalWait >= MAX_WAIT) {
-                    return new Response(JSON.stringify({ success: false, error: "검열 시간 초과" }), { status: 400 });
-                  }
+                } else {
+                  // job 정보가 없으면 initResult를 최종 결과로 사용
+                  pollResult = initResult;
                 }
   
                 let reasons = [];
