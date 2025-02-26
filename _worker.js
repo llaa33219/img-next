@@ -199,18 +199,14 @@ export default {
                   return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
               } else {
-                // 1분 이상인 경우: 영상의 비트레이트를 계산하여 구간별로 파일을 slice해서 검열 API에 전달
+                // 1분 이상인 경우: 영상의 비트레이트를 계산하여 40초 단위 구간으로 파일을 slice해서 검열 API에 전달
                 const videoThreshold = 0.5;
                 let reasons = [];
                 const bitrate = file.size / videoDuration;
                 let segments = [];
-                // 첫 구간: 0초부터 59초 (즉, 60초 분량)
-                segments.push({ start: 0, length: 60 });
-                let currentStart = 60;
-                // 이후 구간: 59초씩 분할
-                while (currentStart < videoDuration) {
-                  segments.push({ start: currentStart, length: Math.min(59, videoDuration - currentStart) });
-                  currentStart += 59;
+                const segmentLength = 40; // 40초 단위
+                for (let currentStart = 0; currentStart < videoDuration; currentStart += segmentLength) {
+                  segments.push({ start: currentStart, length: Math.min(segmentLength, videoDuration - currentStart) });
                 }
   
                 for (const seg of segments) {
