@@ -20,7 +20,7 @@ export default {
         return btoa(binary);
       };
   
-      // POST /upload : 다중 파일 업로드 처리 (이미지는 모자이크 처리 적용, 영상은 기존 검열 로직 그대로)
+      // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행)
       if (request.method === 'POST' && url.pathname === '/upload') {
         try {
           const formData = await request.formData();
@@ -28,16 +28,15 @@ export default {
           if (!files || files.length === 0) {
             return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
           }
-          // 1. 각 파일 처리
-          for (let i = 0; i < files.length; i++) {
-            let file = files[i];
+          // 1. 검열 단계: 모든 파일에 대해 검열 API 호출 (검열 통과 못하면 업로드 중단)
+          for (const file of files) {
             if (file.type.startsWith('image/')) {
               // -------------------------------------------
-              // 이미지: 기존 리사이징 단계 유지 후 Image Redaction API (모자이크 처리) 적용
+              // 이미지 검열
               // -------------------------------------------
-              let fileForProcessing = file;
+              let fileForCensorship = file;
               try {
-                // 기존 리사이징 (최대 600px)
+                // 이미지 리사이징: 최대 가로/세로 600px로 축소하여 검열 속도 향상
                 const buffer = await file.arrayBuffer();
                 const base64 = arrayBufferToBase64(buffer);
                 const dataUrl = `data:${file.type};base64,${base64}`;
@@ -45,43 +44,47 @@ export default {
                   cf: { image: { width: 600, height: 600, fit: "inside" } }
                 });
                 const resizedResponse = await fetch(reqForResize);
-                fileForProcessing = await resizedResponse.blob();
+                fileForCensorship = await resizedResponse.blob();
               } catch (e) {
-                fileForProcessing = file;
+                // 리사이징 실패 시 원본 파일 사용
+                fileForCensorship = file;
               }
   
-              let fileForRedaction = fileForProcessing;
-              try {
-                const redactionForm = new FormData();
-                // 파일 스트림 소진 방지를 위해 slice() 사용
-                redactionForm.append('media', fileForProcessing.slice(0, fileForProcessing.size, fileForProcessing.type), 'upload');
-                redactionForm.append('models', 'redaction');
-                redactionForm.append('redaction', 'mosaic');
-                // 모자이크 강도: 기존 검열 강도와 동일하게(빡세게 적용)
-                redactionForm.append('mosaic_intensity', '20');
-                redactionForm.append('api_user', env.SIGHTENGINE_API_USER);
-                redactionForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
+              const sightForm = new FormData();
+              // 파일 스트림 소진 방지를 위해 slice()로 복제
+              sightForm.append('media', fileForCensorship.slice(0, fileForCensorship.size, fileForCensorship.type), 'upload');
+              sightForm.append('models', 'nudity,wad,offensive');
+              sightForm.append('api_user', env.SIGHTENGINE_API_USER);
+              sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
-                const redactionResponse = await fetch('https://api.sightengine.com/1.0/redact.json', {
-                  method: 'POST',
-                  body: redactionForm
-                });
-                const redactionResult = await redactionResponse.json();
+              const sightResponse = await fetch('https://api.sightengine.com/1.0/check.json', {
+                method: 'POST',
+                body: sightForm
+              });
+              const sightResult = await sightResponse.json();
   
-                if (redactionResult && redactionResult.redacted) {
-                  const redactedFetch = await fetch(redactionResult.redacted);
-                  const redactedBlob = await redactedFetch.blob();
-                  fileForRedaction = new File([redactedBlob], file.name, { type: file.type });
+              let reasons = [];
+              if (sightResult.nudity) {
+                const { is_nude, raw, partial } = sightResult.nudity;
+                if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
+                  reasons.push("선정적 콘텐츠");
                 }
-              } catch (e) {
-                // 모자이크 처리 실패 시 원본 파일 사용
-                fileForRedaction = file;
               }
-              files[i] = fileForRedaction;
+              if (sightResult.offensive && sightResult.offensive.prob > 0.3) {
+                reasons.push("욕설/모욕적 콘텐츠");
+              }
+              if (sightResult.wad && (sightResult.wad.weapon > 0.3 || sightResult.wad.alcohol > 0.3 || sightResult.wad.drugs > 0.3)) {
+                reasons.push("잔인하거나 위험한 콘텐츠");
+              }
+              if (reasons.length > 0) {
+                return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
+              }
             } else if (file.type.startsWith('video/')) {
               // -------------------------------------------
               // 동영상 검열 (짧은/긴 분기)
               // -------------------------------------------
+              // 영상 검열 API 응답은 "data.frames" 내에 값이 포함됨.
+              // 문제 영상 판단 임계치를 0.5로 설정합니다.
               const videoThreshold = 0.5;
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
@@ -108,6 +111,7 @@ export default {
                 if (frames.length > 0) {
                   for (const frame of frames) {
                     if (frame.nudity) {
+                      // "suggestive_classes", "context", "none" 제외하고 각 값이 임계치 이상이면 문제로 판단
                       for (const key in frame.nudity) {
                         if (["suggestive_classes", "context", "none"].includes(key)) continue;
                         if (Number(frame.nudity[key]) >= videoThreshold) {
@@ -129,6 +133,7 @@ export default {
                     }
                   }
                 } else {
+                  // frames가 없으면 단일 객체 검사
                   if (sightResult.data && sightResult.data.nudity) {
                     for (const key in sightResult.data.nudity) {
                       if (["suggestive_classes", "context", "none"].includes(key)) continue;
@@ -255,7 +260,7 @@ export default {
             }
           }
   
-          // 2. 모든 파일이 처리되면 업로드 진행 (각 파일 별로 R2에 저장)
+          // 2. 모든 파일이 검열 통과하면 업로드 진행 (각 파일 별로 R2에 저장)
           let codes = [];
           for (const file of files) {
             const generateRandomCode = (length = 8) => {
