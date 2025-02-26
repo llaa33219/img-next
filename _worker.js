@@ -32,12 +32,12 @@ export default {
               const boxStart = i - 4; // mvhd 박스는 size(4) + type(4)로 시작
               const version = dv.getUint8(boxStart + 8);
               if (version === 0) {
-                // version 0: header = 4(size)+4(type)+1(version)+3(flags)+4(creation)+4(modification)+4(timescale)+4(duration)
+                // version 0: header = 4+4+1+3+4+4+4+4
                 const timescale = dv.getUint32(boxStart + 20);
                 const duration = dv.getUint32(boxStart + 24);
                 return duration / timescale;
               } else if (version === 1) {
-                // version 1: header = 4+4+1+3+8(creation)+8(modification)+4(timescale)+8(duration)
+                // version 1: header = 4+4+1+3+8+8+4+8
                 const timescale = dv.getUint32(boxStart + 28);
                 const high = dv.getUint32(boxStart + 32);
                 const low = dv.getUint32(boxStart + 36);
@@ -204,14 +204,17 @@ export default {
                 let reasons = [];
                 const bitrate = file.size / videoDuration;
                 let segments = [];
-                const segmentLength = 40; // 40초 단위
+                const segmentLength = 40; // 40초 단위 슬라이싱
                 for (let currentStart = 0; currentStart < videoDuration; currentStart += segmentLength) {
                   segments.push({ start: currentStart, length: Math.min(segmentLength, videoDuration - currentStart) });
                 }
   
-                for (const seg of segments) {
+                for (let i = 0; i < segments.length; i++) {
+                  const seg = segments[i];
                   const startByte = Math.floor(seg.start * bitrate);
                   const endByte = Math.floor((seg.start + seg.length) * bitrate);
+                  console.log(`Processing segment ${i+1}/${segments.length}: seconds [${seg.start} ~ ${seg.start + seg.length}], bytes [${startByte} ~ ${endByte}]`);
+  
                   const segmentBlob = file.slice(startByte, endByte, file.type);
   
                   const segmentForm = new FormData();
@@ -233,24 +236,26 @@ export default {
                     frames = Array.isArray(segmentResult.frames) ? segmentResult.frames : [segmentResult.frames];
                   }
   
+                  console.log(`Segment ${i+1} response:`, segmentResult);
+  
                   if (frames.length > 0) {
                     for (const frame of frames) {
                       if (frame.nudity) {
                         for (const key in frame.nudity) {
                           if (["suggestive_classes", "context", "none"].includes(key)) continue;
                           if (Number(frame.nudity[key]) >= videoThreshold) {
-                            reasons.push("선정적 콘텐츠");
+                            reasons.push("선정적 콘텐츠 [Segment " + (i+1) + ": " + seg.start + "~" + (seg.start+seg.length) + " sec, bytes " + startByte + "~" + endByte + "]");
                             break;
                           }
                         }
                       }
                       if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= videoThreshold) {
-                        reasons.push("욕설/모욕적 콘텐츠");
+                        reasons.push("욕설/모욕적 콘텐츠 [Segment " + (i+1) + ": " + seg.start + "~" + (seg.start+seg.length) + " sec, bytes " + startByte + "~" + endByte + "]");
                       }
                       if (frame.wad) {
                         for (const key in frame.wad) {
                           if (Number(frame.wad[key]) >= videoThreshold) {
-                            reasons.push("잔인하거나 위험한 콘텐츠");
+                            reasons.push("잔인하거나 위험한 콘텐츠 [Segment " + (i+1) + ": " + seg.start + "~" + (seg.start+seg.length) + " sec, bytes " + startByte + "~" + endByte + "]");
                             break;
                           }
                         }
@@ -261,18 +266,18 @@ export default {
                       for (const key in segmentResult.data.nudity) {
                         if (["suggestive_classes", "context", "none"].includes(key)) continue;
                         if (Number(segmentResult.data.nudity[key]) >= videoThreshold) {
-                          reasons.push("선정적 콘텐츠");
+                          reasons.push("선정적 콘텐츠 [Segment " + (i+1) + ": " + seg.start + "~" + (seg.start+seg.length) + " sec, bytes " + startByte + "~" + endByte + "]");
                           break;
                         }
                       }
                     }
                     if (segmentResult.data && segmentResult.data.offensive && segmentResult.data.offensive.prob !== undefined && Number(segmentResult.data.offensive.prob) >= videoThreshold) {
-                      reasons.push("욕설/모욕적 콘텐츠");
+                      reasons.push("욕설/모욕적 콘텐츠 [Segment " + (i+1) + ": " + seg.start + "~" + (seg.start+seg.length) + " sec, bytes " + startByte + "~" + endByte + "]");
                     }
                     if (segmentResult.data && segmentResult.data.wad) {
                       for (const key in segmentResult.data.wad) {
                         if (Number(segmentResult.data.wad[key]) >= videoThreshold) {
-                          reasons.push("잔인하거나 위험한 콘텐츠");
+                          reasons.push("잔인하거나 위험한 콘텐츠 [Segment " + (i+1) + ": " + seg.start + "~" + (seg.start+seg.length) + " sec, bytes " + startByte + "~" + endByte + "]");
                           break;
                         }
                       }
