@@ -111,7 +111,6 @@ export default {
               }
   
               const sightForm = new FormData();
-              // 파일 스트림 소진 방지를 위해 slice()로 복제
               sightForm.append('media', fileForCensorship.slice(0, fileForCensorship.size, fileForCensorship.type), 'upload');
               sightForm.append('models', 'nudity,wad,offensive');
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
@@ -158,7 +157,7 @@ export default {
               }
               const effectiveDuration = Math.min(duration, 30);
   
-              // Cloudflare Stream 업로드 (고객 하위 도메인 사용 및 경로 변경, Accept 헤더 추가)
+              // Cloudflare Stream 업로드 (영상 프레임 추출용으로만 사용)
               const streamUploadResponse = await fetch(`https://customer-8z0vdylu97ytcbll.cloudflarestream.com/direct_upload?direct_upload=true`, {
                 method: 'POST',
                 headers: {
@@ -234,7 +233,6 @@ export default {
                 return new Response(JSON.stringify({ success: false, error: "검열 API 요청 실패: " + e.message }), { status: 400 });
               }
   
-              // 10개 프레임 결과 중 각 카테고리(선정성, 욕설, 위험)의 최대값을 계산
               let maxNudity = 0;
               let nudityFlag = false;
               let maxOffensive = 0;
@@ -307,33 +305,12 @@ export default {
               return new Response(JSON.stringify({ success: false, error: '코드 생성 실패' }), { status: 500 });
             }
             const fileBuffer = await file.arrayBuffer();
+            // 이미지와 영상 파일 모두 R2에 그대로 저장
             await env.IMAGES.put(code, fileBuffer, {
               httpMetadata: { contentType: file.type }
             });
   
-            // 영상 파일인 경우 Cloudflare Stream copy ingestion 실행
-            if (file.type.startsWith('video/')) {
-              const videoUrl = `https://${url.host}/${code}?raw=1`;
-              const copyResponse = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_STREAM_ACCOUNT_ID}/stream/copy`, {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${env.CLOUDFLARE_STREAM_API_TOKEN}`,
-                  'Content-Type': 'application/json',
-                  'Accept': 'application/json'
-                },
-                body: JSON.stringify({ url: videoUrl, meta: { name: file.name } })
-              });
-              const copyResult = await copyResponse.json();
-              if (!copyResponse.ok || !copyResult.result || !copyResult.result.uid) {
-                throw new Error("Cloudflare Stream 업로드 실패");
-              }
-              const videoId = copyResult.result.uid;
-              await waitForStreamProcessing(videoId);
-              const videoInfo = JSON.stringify({ video: true, uid: videoId });
-              await env.IMAGES.put(code, new TextEncoder().encode(videoInfo), {
-                httpMetadata: { contentType: 'application/json' }
-              });
-            }
+            // 기존의 영상 copy ingestion 관련 코드는 제거합니다.
   
             codes.push(code);
           }
@@ -368,18 +345,7 @@ export default {
         for (const { code, object } of objects) {
           if (object && object.httpMetadata) {
             const ct = object.httpMetadata.contentType || "";
-            if (ct === 'application/json') {
-              const text = await object.text();
-              try {
-                const info = JSON.parse(text);
-                if (info.video && info.uid) {
-                  mediaTags += `<video src="https://videodelivery.net/${info.uid}/" controls onclick="toggleZoom(this)"></video>\n`;
-                  continue;
-                }
-              } catch (e) {
-                // JSON 파싱 실패 시 fallback 처리
-              }
-            }
+            // 영상 파일은 R2에 저장된 원본 URL로 렌더링
             if (ct.startsWith('video/')) {
               mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls onclick="toggleZoom(this)"></video>\n`;
             } else {
