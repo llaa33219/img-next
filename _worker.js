@@ -1,3 +1,6 @@
+// 전역 변수: 최근 처리한 요청 ID들
+const seenRequests = new Set();
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -7,6 +10,31 @@ export default {
       url: request.url,
       headers: Object.fromEntries(request.headers)
     });
+
+    // =======================
+    // 1) Dedup (중복 방지)
+    // =======================
+    if (request.method === 'POST' && url.pathname === '/upload') {
+      const cfReqId = request.headers.get('Cf-Request-Id');
+      if (cfReqId) {
+        if (seenRequests.has(cfReqId)) {
+          // 이미 처리한 요청 => 중복
+          console.log(`중복 요청 감지: Cf-Request-Id=${cfReqId}`);
+          return new Response(JSON.stringify({
+            success: false,
+            error: '중복 요청 (이미 처리 중)이므로 업로드가 취소되었습니다.'
+          }), { status: 409 });
+        } else {
+          // 처음 보는 cfReqId => 저장
+          seenRequests.add(cfReqId);
+          // 60초 후 제거하여 메모리 누수 방지
+          ctx.waitUntil((async () => {
+            await new Promise(r => setTimeout(r, 60000));
+            seenRequests.delete(cfReqId);
+          })());
+        }
+      }
+    }
 
     // 헬퍼 함수1: ArrayBuffer -> Base64
     const arrayBufferToBase64 = (buffer) => {
@@ -19,15 +47,19 @@ export default {
       return btoa(binary);
     };
 
-    // 헬퍼 함수2: MP4에서 mvhd 찾아 duration(초)
+    // 헬퍼 함수2: MP4 파일에서 mvhd 박스를 찾아 duration(초)
     async function getMP4Duration(file) {
       try {
         const buffer = await file.arrayBuffer();
         const dv = new DataView(buffer);
         const uint8 = new Uint8Array(buffer);
         for (let i = 0; i < uint8.length - 4; i++) {
-          // 'm','v','h','d' = 109,118,104,100
-          if (uint8[i] === 109 && uint8[i + 1] === 118 && uint8[i + 2] === 104 && uint8[i + 3] === 100) {
+          if (
+            uint8[i] === 109 && // 'm'
+            uint8[i + 1] === 118 && // 'v'
+            uint8[i + 2] === 104 && // 'h'
+            uint8[i + 3] === 100 // 'd'
+          ) {
             const boxStart = i - 4;
             const version = dv.getUint8(boxStart + 8);
             if (version === 0) {
@@ -50,7 +82,7 @@ export default {
       }
     }
 
-    // 헬퍼 함수3: frames/data에서 부적절 콘텐츠 찾기
+    // 헬퍼 함수3: frames/data를 분석해 유해 여부 판단
     function checkFramesForCensorship(frames, data, threshold) {
       let reasons = [];
       if (frames && frames.length > 0) {
@@ -78,7 +110,7 @@ export default {
           if (reasons.length > 0) break;
         }
       } else {
-        // frames가 없으면 data 최상위
+        // frames가 없으면 data 최상위 nudity/offensive/wad
         if (data && data.nudity) {
           for (const key in data.nudity) {
             if (["suggestive_classes", "context", "none"].includes(key)) continue;
@@ -104,7 +136,7 @@ export default {
     }
 
     // ============================
-    // POST /upload : 검열 -> R2 업로드
+    // POST /upload => 검열 -> R2 업로드
     // ============================
     if (request.method === 'POST' && url.pathname === '/upload') {
       try {
@@ -114,16 +146,17 @@ export default {
           return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
         }
 
-        // 파일별 검열
+        // 1) 파일별 검열
         for (const file of files) {
-          console.log(`file.type=${file.type}, size=${file.size}`);
+          console.log(`Processing file: type=${file.type}, size=${file.size}`);
 
-          // 1) 이미지
           if (file.type.startsWith('image/')) {
-            console.log(">>> 이미지 검열 (check.json)");
+            // --------------------------
+            // 이미지 => check.json
+            // --------------------------
             let fileForCensorship = file;
             try {
-              // 리사이징 (600px)
+              // 이미지 리사이징 (600px)
               const buffer = await file.arrayBuffer();
               const base64 = arrayBufferToBase64(buffer);
               const dataUrl = `data:${file.type};base64,${base64}`;
@@ -135,18 +168,17 @@ export default {
                 fileForCensorship = await resizedResponse.blob();
               }
             } catch (e) {
-              console.log("이미지 리사이징 실패:", e);
+              console.log("이미지 리사이즈 실패:", e);
               fileForCensorship = file;
             }
 
-            // check.json
+            // Sightengine API
             const sightForm = new FormData();
             sightForm.append('media', fileForCensorship, 'upload');
             sightForm.append('models', 'nudity,wad,offensive');
             sightForm.append('api_user', env.SIGHTENGINE_API_USER);
             sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
 
-            // fetch
             const sightResp = await fetch('https://api.sightengine.com/1.0/check.json', {
               method: 'POST',
               body: sightForm
@@ -163,7 +195,7 @@ export default {
               return new Response(JSON.stringify({ success: false, error: `이미지 검열 JSON 파싱 오류: ${fallback}` }), { status: 400 });
             }
 
-            // 결과 판단
+            // 결과 분석
             let reasons = [];
             if (sightResult.nudity) {
               const { is_nude, raw, partial } = sightResult.nudity;
@@ -181,10 +213,10 @@ export default {
               return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
             }
 
-          // 2) 동영상
           } else if (file.type.startsWith('video/')) {
-            console.log(">>> 동영상 검열");
-            // 용량 체크
+            // --------------------------
+            // 동영상
+            // --------------------------
             if (file.size > 50 * 1024 * 1024) {
               return new Response(JSON.stringify({ success: false, error: "영상 용량이 50MB를 초과합니다." }), { status: 400 });
             }
@@ -194,9 +226,7 @@ export default {
             if (!videoDuration) videoDuration = 0;
 
             if (videoDuration < 60 && videoDuration !== 0) {
-              // -------------------------
               // 1분 미만 => check-sync
-              // -------------------------
               console.log("1분 미만 => video/check-sync.json");
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
@@ -204,22 +234,21 @@ export default {
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
 
-              const sightResp = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
+              let sightResp = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                 method: 'POST',
                 body: sightForm
               });
               if (!sightResp.ok) {
-                const errText = await sightResp.text();
+                let errText = await sightResp.text();
                 return new Response(JSON.stringify({ success: false, error: `동영상(sync) API 실패: ${errText}` }), { status: 400 });
               }
               let sightResult;
               try {
                 sightResult = await sightResp.json();
               } catch (err) {
-                const fallback = await sightResp.text();
+                let fallback = await sightResp.text();
                 return new Response(JSON.stringify({ success: false, error: `동영상(sync) JSON 파싱 오류: ${fallback}` }), { status: 400 });
               }
-              console.log("동영상 sync 결과:", sightResult);
 
               let frames = [];
               if (sightResult.data && sightResult.data.frames) {
@@ -227,15 +256,13 @@ export default {
               } else if (sightResult.frames) {
                 frames = Array.isArray(sightResult.frames) ? sightResult.frames : [sightResult.frames];
               }
-              const found = checkFramesForCensorship(frames, sightResult.data, 0.5);
+              let found = checkFramesForCensorship(frames, sightResult.data, 0.5);
               if (found.length > 0) {
                 return new Response(JSON.stringify({ success: false, error: "검열됨: " + found.join(", ") }), { status: 400 });
               }
 
             } else {
-              // -------------------------
               // 1분 이상 => async=1
-              // -------------------------
               console.log("1분 이상 => video/check.json (async=1)");
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
@@ -244,7 +271,7 @@ export default {
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
               sightForm.append('async', '1');
 
-              // 비동기 업로드 (한번만)
+              // 비동기 업로드(한번만)
               let initialResp = await fetch('https://api.sightengine.com/1.0/video/check.json', {
                 method: 'POST',
                 body: sightForm
@@ -275,7 +302,7 @@ export default {
               let finalData = null;
               let maxAttempts = 6; // 5초씩 6회 => 30초
               while (maxAttempts > 0) {
-                await new Promise(r => setTimeout(r, 5000)); // 5초 대기
+                await new Promise(r => setTimeout(r, 5000));
 
                 const statusUrl = `https://api.sightengine.com/1.0/video/check.json?request_id=${requestId}&models=nudity,wad,offensive&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`;
                 let statusResp = await fetch(statusUrl);
@@ -283,7 +310,6 @@ export default {
                   let errText = await statusResp.text();
                   return new Response(JSON.stringify({ success: false, error: `비동기 폴링 실패: ${errText}` }), { status: 400 });
                 }
-
                 let statusResult;
                 try {
                   statusResult = await statusResp.json();
@@ -314,7 +340,7 @@ export default {
               } else if (finalData.frames) {
                 frames = Array.isArray(finalData.frames) ? finalData.frames : [finalData.frames];
               }
-              const found = checkFramesForCensorship(frames, finalData.data, 0.5);
+              let found = checkFramesForCensorship(frames, finalData.data, 0.5);
               if (found.length > 0) {
                 return new Response(JSON.stringify({ success: false, error: "검열됨: " + found.join(", ") }), { status: 400 });
               }
@@ -322,9 +348,8 @@ export default {
           }
         }
 
-        // ============================
-        // 검열 통과 => R2 업로드
-        // ============================
+        // 2) 검열 통과 => R2 업로드
+        console.log(">>> 검열 통과, R2 업로드");
         let codes = [];
         for (const file of files) {
           const generateRandomCode = (length = 8) => {
@@ -364,7 +389,7 @@ export default {
     }
 
     // ============================
-    // GET /{코드}: R2 파일 or HTML
+    // GET /{코드}: 파일 or HTML
     // ============================
     else if (request.method === 'GET' && /^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname)) {
       if (url.searchParams.get('raw') === '1') {
@@ -378,7 +403,6 @@ export default {
         return new Response(object.body, { headers });
       }
 
-      // HTML 페이지 (전체)
       const codes = url.pathname.slice(1).split(",");
       const objects = await Promise.all(codes.map(async code => {
         const object = await env.IMAGES.get(code);
@@ -386,13 +410,14 @@ export default {
       }));
       let mediaTags = "";
       for (const { code, object } of objects) {
-        if (object && object.httpMetadata && object.httpMetadata.contentType?.startsWith('video/')) {
+        if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
           mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls onclick="toggleZoom(this)"></video>\n`;
         } else {
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
         }
       }
 
+      // 전체 HTML
       const htmlContent = `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -404,7 +429,6 @@ export default {
     body {
       display: flex;
       flex-direction: column;
-      justify-content: flex-start;
       align-items: center;
       height: 100vh;
       margin: 0;
@@ -632,7 +656,7 @@ export default {
       return new Response(htmlContent, { headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
     }
 
-    // 그 외 -> 기본 에셋 핸들러
+    // 그 외 => 기본 에셋 핸들러
     return env.ASSETS.fetch(request);
   }
 };
