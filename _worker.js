@@ -297,9 +297,10 @@ async function handleVideoCensorship(file, env) {
 
         // 폴링
         let finalData=null;
-        let maxAttempts=6; // 5초씩 6번
+        let maxAttempts=6; // 5초씩 6번 -> 여기를 10초씩으로 변경
         while(maxAttempts>0) {
-          await new Promise(r=>setTimeout(r,5000));
+          // === [변경] 폴링 간격 10초 ===
+          await new Promise(r => setTimeout(r, 10000)); 
           const statusUrl=`https://api.sightengine.com/1.0/video/check.json?request_id=${reqId}&models=nudity,wad,offensive&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`;
           let statusResp=await fetch(statusUrl);
           if(!statusResp.ok) {
@@ -323,7 +324,7 @@ async function handleVideoCensorship(file, env) {
           maxAttempts--;
         }
         if(!finalData) {
-          return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 검열이 30초 내에 끝나지 않음`}),{status:408})};
+          return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 검열이 60초(총 6회 폴링) 내에 끝나지 않음`}),{status:408})};
         }
 
         // 최종 프레임 검사
