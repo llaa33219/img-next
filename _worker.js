@@ -841,24 +841,38 @@ function renderHTML(mediaTags, host) {
     }
   </style>
   <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
+  <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
 </head>
 <body>
   <div class="header-content">
     <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" style="width: 120px; height: auto; cursor: pointer;" onclick="location.href='/';">
-      <h1 class="title-img-desktop">이미지 공유</h1>
-      <h1 class="title-img-mobile">이미지<br>공유</h1>
+    <h1 class="title-img-desktop">이미지 공유</h1>
+    <h1 class="title-img-mobile">이미지<br>공유</h1>
   </div>
   <div id="imageContainer">
     ${mediaTags}
   </div>
   <script>
+    // BLOUplayer 활성화를 위한 스크립트
+    document.addEventListener('DOMContentLoaded', function() {
+      if (typeof BLOUplayer === 'function') {
+        const videos = document.querySelectorAll('video');
+        videos.forEach(function(video) {
+          // BLOUplayer 인스턴스 생성 (기본 옵션)
+          new BLOUplayer(video);
+        });
+      }
+    });
+
     function toggleZoom(elem) {
       if (!elem.classList.contains('landscape') && !elem.classList.contains('portrait')) {
         let width=0, height=0;
         if (elem.tagName.toLowerCase()==='img') {
-          width=elem.naturalWidth; height=elem.naturalHeight;
+          width=elem.naturalWidth; 
+          height=elem.naturalHeight;
         } else if (elem.tagName.toLowerCase()==='video') {
-          width=elem.videoWidth; height=elem.videoHeight;
+          width=elem.videoWidth; 
+          height=elem.videoHeight;
         }
         if(width && height){
           if(width>=height) elem.classList.add('landscape');
@@ -871,7 +885,6 @@ function renderHTML(mediaTags, host) {
       window.location.href='/';
     });
   </script>
-    <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
 </body>
 </html>`;
 }
