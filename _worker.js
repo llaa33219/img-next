@@ -23,7 +23,10 @@ export default {
       // 헬퍼 함수: MP4 파일에서 mvhd 박스를 찾아 duration(초)를 추출 (버전0,1 지원)
       async function getMP4Duration(file) {
         try {
-          const buffer = await file.arrayBuffer();
+          // 파일 전체 대신, 헤더 영역(처음 1MB)만 읽어들여서 처리
+          const headerSize = 1024 * 1024; // 1MB
+          const headerBlob = file.slice(0, headerSize, file.type);
+          const buffer = await headerBlob.arrayBuffer();
           const dv = new DataView(buffer);
           const uint8 = new Uint8Array(buffer);
           // mvhd 문자열의 아스키 코드: m=109, v=118, h=104, d=100
@@ -204,11 +207,6 @@ export default {
                 const bitrate = file.size / videoDuration;
                 let segments = [];
                 const segmentLength = 40; // 40초 단위 슬라이싱
-  
-                // MP4 파일의 올바른 분석을 위해 파일의 헤더(처음 1MB 정도)를 미리 추출
-                const headerSize = 1024 * 1024; // 1MB
-                const headerBlob = file.slice(0, headerSize, file.type);
-  
                 for (let currentStart = 0; currentStart < videoDuration; currentStart += segmentLength) {
                   segments.push({ start: currentStart, length: Math.min(segmentLength, videoDuration - currentStart) });
                 }
@@ -220,6 +218,8 @@ export default {
                   debugLogs.push(`Segment ${i+1}/${segments.length}: seconds [${seg.start} ~ ${seg.start + seg.length}], bytes [${startByte} ~ ${endByte}]`);
   
                   // 각 구간의 Blob에 헤더를 추가하여 올바른 MP4 파일 형태로 구성
+                  const headerSize = 1024 * 1024; // 1MB
+                  const headerBlob = file.slice(0, headerSize, file.type);
                   const segmentBlob = new Blob([headerBlob, file.slice(startByte, endByte, file.type)], { type: file.type });
                   const segmentForm = new FormData();
                   segmentForm.append('media', segmentBlob, 'upload');
