@@ -1,6 +1,7 @@
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
     // 디버깅: 들어온 요청의 기본 정보를 출력합니다.
     console.log("Incoming Request:", {
       method: request.method,
@@ -20,7 +21,7 @@ export default {
       return btoa(binary);
     };
 
-    // 헬퍼 함수: MP4 파일에서 mvhd 박스를 찾아 duration(초)를 추출 (버전0,1 지원)
+    // 헬퍼 함수: MP4에서 mvhd 박스를 찾아 영상 duration(초)을 추출 (버전0,1 지원)
     async function getMP4Duration(file) {
       try {
         const buffer = await file.arrayBuffer();
@@ -52,7 +53,98 @@ export default {
       }
     }
 
-    // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행)
+    // 박스를 찾는 유틸 함수 ([size, type, ...] 구조를 파싱)
+    function findBox(dv, offset, boxName) {
+      while (offset < dv.byteLength) {
+        const size = dv.getUint32(offset);
+        const name = String.fromCharCode(
+          dv.getUint8(offset + 4),
+          dv.getUint8(offset + 5),
+          dv.getUint8(offset + 6),
+          dv.getUint8(offset + 7)
+        );
+        if (!size || size < 8) {
+          return null;
+        }
+        if (name === boxName) {
+          return { start: offset, size };
+        }
+        offset += size;
+      }
+      return null;
+    }
+
+    // MP4에서 ftyp, moov 두 개 박스를 추출
+    function extractFtypMoov(buffer) {
+      const dv = new DataView(buffer);
+
+      const ftypBox = findBox(dv, 0, 'ftyp');
+      if (!ftypBox) return null;
+
+      const moovBox = findBox(dv, 0, 'moov');
+      if (!moovBox) return null;
+
+      const ftypArr = buffer.slice(ftypBox.start, ftypBox.start + ftypBox.size);
+      const moovArr = buffer.slice(moovBox.start, moovBox.start + moovBox.size);
+
+      return { ftypArr, moovArr };
+    }
+
+    // 공통 함수: frames/data에서 검열 사유를 찾음
+    function checkFramesForCensorship(frames, data, threshold) {
+      let reasons = [];
+      if (frames.length > 0) {
+        for (const frame of frames) {
+          if (frame.nudity) {
+            for (const key in frame.nudity) {
+              if (["suggestive_classes", "context", "none"].includes(key)) continue;
+              if (Number(frame.nudity[key]) >= threshold) {
+                reasons.push("선정적 콘텐츠");
+                break;
+              }
+            }
+          }
+          if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= threshold) {
+            reasons.push("욕설/모욕적 콘텐츠");
+          }
+          if (frame.wad) {
+            for (const key in frame.wad) {
+              if (Number(frame.wad[key]) >= threshold) {
+                reasons.push("잔인하거나 위험한 콘텐츠");
+                break;
+              }
+            }
+          }
+          if (reasons.length > 0) break;
+        }
+      } else {
+        // frames가 아예 없으면 상위 data 값 체크
+        if (data && data.nudity) {
+          for (const key in data.nudity) {
+            if (["suggestive_classes", "context", "none"].includes(key)) continue;
+            if (Number(data.nudity[key]) >= threshold) {
+              reasons.push("선정적 콘텐츠");
+              break;
+            }
+          }
+        }
+        if (data && data.offensive && data.offensive.prob !== undefined && Number(data.offensive.prob) >= threshold) {
+          reasons.push("욕설/모욕적 콘텐츠");
+        }
+        if (data && data.wad) {
+          for (const key in data.wad) {
+            if (Number(data.wad[key]) >= threshold) {
+              reasons.push("잔인하거나 위험한 콘텐츠");
+              break;
+            }
+          }
+        }
+      }
+      return reasons;
+    }
+
+    // ============== 여기서부터 라우터 ==============
+    // POST /upload : 다중 파일 업로드 처리 (검열 -> R2 저장 -> 링크 반환)
     if (request.method === 'POST' && url.pathname === '/upload') {
       try {
         const formData = await request.formData();
@@ -60,15 +152,15 @@ export default {
         if (!files || files.length === 0) {
           return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
         }
-        // 1. 검열 단계: 모든 파일에 대해 검열 API 호출 (검열 통과 못하면 업로드 중단)
+
+        // 1. 모든 파일에 대해 검열 통과 여부 확인
         for (const file of files) {
           if (file.type.startsWith('image/')) {
-            // -------------------------------------------
-            // 이미지 검열 (그대로)
-            // -------------------------------------------
+            // (1) 이미지 검열
+            // ------------------------------
             let fileForCensorship = file;
             try {
-              // 이미지 리사이징: 최대 600px 축소하여 검열 속도 향상
+              // 이미지 리사이징: 최대 600px 축소하여 검열 속도↑
               const buffer = await file.arrayBuffer();
               const base64 = arrayBufferToBase64(buffer);
               const dataUrl = `data:${file.type};base64,${base64}`;
@@ -110,25 +202,25 @@ export default {
             if (reasons.length > 0) {
               return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
             }
+
           } else if (file.type.startsWith('video/')) {
-            // -------------------------------------------
-            // 동영상 검열 (1분 미만은 그대로, 1분 이상은 구간별로 처리)
-            // -------------------------------------------
-            // 1) 용량 체크: 50MB 초과면 경고
+            // (2) 동영상 검열
+            // ------------------------------
+            // 1) 용량 체크
             if (file.size > 50 * 1024 * 1024) {
               return new Response(JSON.stringify({ success: false, error: "영상 용량이 50MB를 초과합니다." }), { status: 400 });
             }
 
-            // 2) 영상 길이(초) 확인 (mp4 기준)
+            // 2) MP4 길이 추출
             let videoDuration = await getMP4Duration(file);
             if (videoDuration === null) {
               videoDuration = 0;
             }
 
             if (videoDuration < 60) {
-              // --------------------------------------------
-              // 1분 미만: 기존 방식 그대로 처리 (수정 X)
-              // --------------------------------------------
+              // ---------------------------
+              // 1분 미만: 기존 로직 그대로
+              // ---------------------------
               const videoThreshold = 0.5;
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
@@ -198,82 +290,137 @@ export default {
               if (reasons.length > 0) {
                 return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
+
             } else {
-              // ---------------------------------------------------------------
-              // 1분 이상: 영상의 비트레이트를 계산하여 40초 단위로 구간별 요청
-              // ---------------------------------------------------------------
+              // ----------------------------
+              // 1분 이상: 40초 단위 구간화
+              // ----------------------------
               const videoThreshold = 0.5;
               let reasons = [];
               let debugLogs = [];
-              const bitrate = file.size / videoDuration;
-              let segments = [];
-              const segmentLength = 40; // 40초 단위
 
-              for (let currentStart = 0; currentStart < videoDuration; currentStart += segmentLength) {
-                segments.push({ start: currentStart, length: Math.min(segmentLength, videoDuration - currentStart) });
+              // 전체 파일 arrayBuffer
+              const fileBuffer = await file.arrayBuffer();
+              const dv = new DataView(fileBuffer);
+
+              // ftyp + moov 추출
+              const boxes = extractFtypMoov(fileBuffer);
+              if (!boxes) {
+                // ftyp/moov 없으면 → 통째로 fallback
+                debugLogs.push("Cannot find ftyp/moov, fallback to full check.");
+
+                const fallbackForm = new FormData();
+                fallbackForm.append('media', new Blob([fileBuffer], { type: file.type }), 'upload');
+                fallbackForm.append('models', 'nudity,wad,offensive');
+                fallbackForm.append('api_user', env.SIGHTENGINE_API_USER);
+                fallbackForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
+
+                const fallbackResp = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
+                  method: 'POST',
+                  body: fallbackForm
+                });
+                const fallbackResult = await fallbackResp.json();
+                debugLogs.push(`Fallback result: ${JSON.stringify(fallbackResult)}`);
+
+                if (fallbackResult.status === 'failure') {
+                  reasons.push(`Fallback check failed: ${fallbackResult.error}`);
+                  reasons.push(`DEBUG LOGS: ${debugLogs.join(" | ")}`);
+                  return new Response(JSON.stringify({ success: false, error: reasons.join(" | ") }), { status: 400 });
+                }
+
+                // 프레임 분석
+                let fallbackFrames = [];
+                if (fallbackResult.data && fallbackResult.data.frames) {
+                  fallbackFrames = Array.isArray(fallbackResult.data.frames) ? fallbackResult.data.frames : [fallbackResult.data.frames];
+                } else if (fallbackResult.frames) {
+                  fallbackFrames = Array.isArray(fallbackResult.frames) ? fallbackResult.frames : [fallbackResult.frames];
+                }
+                let fallbackDetected = checkFramesForCensorship(fallbackFrames, fallbackResult.data, videoThreshold);
+                if (fallbackDetected.length > 0) {
+                  reasons.push("검열됨: " + fallbackDetected.join(", "));
+                  reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
+                  return new Response(JSON.stringify({ success: false, error: reasons.join(" | ") }), { status: 400 });
+                }
+                // 문제없으면 계속
+                continue;
               }
 
-              // 전체 파일을 메모리에 읽음
-              const fileBuffer = await file.arrayBuffer();
+              // 비트레이트 계산
+              const bitrate = fileBuffer.byteLength / videoDuration;
+              // 40초 단위 segments
+              let segments = [];
+              const segmentLength = 40;
+              for (let startSec = 0; startSec < videoDuration; startSec += segmentLength) {
+                segments.push({
+                  start: startSec,
+                  length: Math.min(segmentLength, videoDuration - startSec)
+                });
+              }
 
+              // 각 세그먼트별 검열
               for (let i = 0; i < segments.length; i++) {
                 const seg = segments[i];
                 const startByte = Math.floor(seg.start * bitrate);
                 const endByte = Math.floor((seg.start + seg.length) * bitrate);
-                debugLogs.push(`Segment ${i+1}/${segments.length}: seconds [${seg.start} ~ ${seg.start + seg.length}], bytes [${startByte} ~ ${endByte}]`);
 
-                // 실제 endByte가 파일 크기를 넘지 않도록 조정
+                debugLogs.push(`Segment ${i+1}/${segments.length}: [${seg.start}~${seg.start+seg.length}s], bytes [${startByte}~${endByte}]`);
                 const realEndByte = Math.min(endByte, fileBuffer.byteLength);
 
-                // ======== 변경 포인트: break -> continue ========
+                // == break -> continue 로 수정 (한 구간 문제 생겨도 다음 구간 계속)
                 if (startByte >= fileBuffer.byteLength) {
-                  debugLogs.push(`Segment ${i+1} startByte >= file.size, skipping`);
-                  continue; // 다음 세그먼트 진행
+                  debugLogs.push(`Segment ${i+1} startByte >= file.size, skip`);
+                  continue;
                 }
                 if (realEndByte <= startByte) {
-                  debugLogs.push(`Segment ${i+1} realEndByte <= startByte, skipping`);
-                  continue; // 다음 세그먼트 진행
-                }
-
-                // 잘라낼 청크
-                const segmentArr = fileBuffer.slice(startByte, realEndByte);
-                if (segmentArr.byteLength === 0) {
-                  debugLogs.push(`Segment ${i+1} is zero bytes. Skipping censorship check for this segment.`);
+                  debugLogs.push(`Segment ${i+1} realEndByte <= startByte, skip`);
                   continue;
                 }
 
-                const segmentBlob = new Blob([segmentArr], { type: file.type });
+                // 구간 데이터
+                const contentArr = fileBuffer.slice(startByte, realEndByte);
+                if (contentArr.byteLength === 0) {
+                  debugLogs.push(`Segment ${i+1} is zero bytes. skip`);
+                  continue;
+                }
+
+                // ftyp + moov + 구간을 합쳐 독립된 MP4처럼 만듦
+                const segmentBlob = new Blob([boxes.ftypArr, boxes.moovArr, contentArr], { type: file.type });
                 if (segmentBlob.size === 0) {
-                  debugLogs.push(`Segment ${i+1} is zero bytes after blob creation. Skipping censorship check.`);
+                  debugLogs.push(`Segment ${i+1} blob is zero size. skip`);
                   continue;
                 }
 
-                // Sightengine로 요청
+                // SightEngine API로 전송
                 const segmentForm = new FormData();
                 segmentForm.append('media', segmentBlob, 'upload');
                 segmentForm.append('models', 'nudity,wad,offensive');
                 segmentForm.append('api_user', env.SIGHTENGINE_API_USER);
                 segmentForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
 
-                const segmentResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
+                const segmentResp = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                   method: 'POST',
                   body: segmentForm
                 });
-                const segmentResult = await segmentResponse.json();
-                debugLogs.push(`Segment ${i+1} response: ${JSON.stringify(segmentResult)}`);
+                const segmentResult = await segmentResp.json();
+                debugLogs.push(`Segment ${i+1} result: ${JSON.stringify(segmentResult)}`);
 
-                // 분석
+                if (segmentResult.status === "failure") {
+                  // SightEngine API가 chunk를 처리 못했을 경우
+                  debugLogs.push(`Segment ${i+1} check failed: ${segmentResult.error}`);
+                  // 굳이 여기서 중단하지 않고 계속해볼 수도 있음. 
+                  continue;
+                }
+
+                // 프레임 분석
                 let frames = [];
                 if (segmentResult.data && segmentResult.data.frames) {
                   frames = Array.isArray(segmentResult.data.frames) ? segmentResult.data.frames : [segmentResult.data.frames];
                 } else if (segmentResult.frames) {
                   frames = Array.isArray(segmentResult.frames) ? segmentResult.frames : [segmentResult.frames];
                 }
-
-                // 실제 검열 판단
-                let foundReasons = checkFramesForCensorship(frames, segmentResult.data, videoThreshold);
-                if (foundReasons.length > 0) {
-                  reasons.push("검열됨: " + foundReasons.join(", "));
+                let found = checkFramesForCensorship(frames, segmentResult.data, videoThreshold);
+                if (found.length > 0) {
+                  reasons.push("검열됨: " + found.join(", "));
                   reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
                   return new Response(JSON.stringify({ success: false, error: reasons.join(" | ") }), { status: 400 });
                 }
@@ -282,7 +429,7 @@ export default {
           }
         }
 
-        // 2. 검열 통과 후: 각 파일 별로 R2에 저장
+        // 2. 검열 통과 시, R2에 업로드
         let codes = [];
         for (const file of files) {
           const generateRandomCode = (length = 8) => {
@@ -294,6 +441,7 @@ export default {
             return result;
           };
           let code;
+          // 중복되지 않는 코드 5번 시도
           for (let i = 0; i < 5; i++) {
             code = generateRandomCode(8);
             const existing = await env.IMAGES.get(code);
@@ -308,18 +456,23 @@ export default {
           });
           codes.push(code);
         }
+
+        // 업로드 성공 → url 반환
         const urlCodes = codes.join(",");
         const imageUrl = `https://${url.host}/${urlCodes}`;
         return new Response(JSON.stringify({ success: true, url: imageUrl }), {
           headers: { 'Content-Type': 'application/json' }
         });
+
       } catch (err) {
         return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
       }
     }
-    // GET /{코드} : R2에서 파일 반환 또는 HTML 래퍼 페이지 제공 (다중 코드 지원)
+
+    // GET /{코드} : R2에서 파일을 찾아 반환 or HTML로 보여주기 (다중코드 지원)
     else if (request.method === 'GET' && /^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname)) {
       if (url.searchParams.get('raw') === '1') {
+        // raw=1 이면 원본 바이너리 직접 반환
         const code = url.pathname.slice(1).split(",")[0];
         const object = await env.IMAGES.get(code);
         if (!object) {
@@ -329,6 +482,7 @@ export default {
         headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
         return new Response(object.body, { headers });
       }
+      // 아니면 HTML 페이지
       const codes = url.pathname.slice(1).split(",");
       const objects = await Promise.all(codes.map(async code => {
         const object = await env.IMAGES.get(code);
@@ -436,7 +590,6 @@ export default {
       max-height: 50vh;
       display: block;
       margin: 20px auto;
-      cursor: pointer;
       transition: all 0.3s ease;
       object-fit: contain;
       cursor: zoom-in;
@@ -445,7 +598,6 @@ export default {
     #imageContainer img.landscape,
     #imageContainer video.landscape {
       width: 40vw;
-      height: auto;
       max-width: 40vw;
       cursor: zoom-in;
     }
@@ -461,7 +613,6 @@ export default {
     #imageContainer img.expanded.landscape,
     #imageContainer video.expanded.landscape {
       width: 80vw;
-      height: auto;
       max-width: 80vw;
       max-height: 100vh;
       cursor: zoom-out;
@@ -577,62 +728,13 @@ export default {
   </script>
 </body>
 </html>`;
-      return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+
+      return new Response(htmlContent, {
+        headers: { "Content-Type": "text/html; charset=UTF-8" },
+      });
     }
 
+    // 그 외 -> 기본 에셋 핸들러
     return env.ASSETS.fetch(request);
-  }
+  },
 };
-
-// 공통 함수: 각 프레임(또는 data)에서 검열 사유 찾기
-function checkFramesForCensorship(frames, data, threshold) {
-  let reasons = [];
-  if (frames.length > 0) {
-    for (const frame of frames) {
-      if (frame.nudity) {
-        for (const key in frame.nudity) {
-          if (["suggestive_classes", "context", "none"].includes(key)) continue;
-          if (Number(frame.nudity[key]) >= threshold) {
-            reasons.push("선정적 콘텐츠");
-            break;
-          }
-        }
-      }
-      if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= threshold) {
-        reasons.push("욕설/모욕적 콘텐츠");
-      }
-      if (frame.wad) {
-        for (const key in frame.wad) {
-          if (Number(frame.wad[key]) >= threshold) {
-            reasons.push("잔인하거나 위험한 콘텐츠");
-            break;
-          }
-        }
-      }
-      if (reasons.length > 0) break;
-    }
-  } else {
-    // frame이 없으면 data의 top-level nudity/offensive/wad 값 확인
-    if (data && data.nudity) {
-      for (const key in data.nudity) {
-        if (["suggestive_classes", "context", "none"].includes(key)) continue;
-        if (Number(data.nudity[key]) >= threshold) {
-          reasons.push("선정적 콘텐츠");
-          break;
-        }
-      }
-    }
-    if (data && data.offensive && data.offensive.prob !== undefined && Number(data.offensive.prob) >= threshold) {
-      reasons.push("욕설/모욕적 콘텐츠");
-    }
-    if (data && data.wad) {
-      for (const key in data.wad) {
-        if (Number(data.wad[key]) >= threshold) {
-          reasons.push("잔인하거나 위험한 콘텐츠");
-          break;
-        }
-      }
-    }
-  }
-  return reasons;
-}
