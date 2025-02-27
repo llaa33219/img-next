@@ -52,6 +52,45 @@ export default {
       }
     }
 
+    // 추가된 헬퍼: MP4에서 ftyp, moov 박스를 추출
+    function findBox(dv, offset, boxName) {
+      // MP4는 [boxSize(4바이트), boxType(4바이트), ...] 형태
+      while (offset < dv.byteLength) {
+        const size = dv.getUint32(offset);
+        const name = String.fromCharCode(
+          dv.getUint8(offset + 4),
+          dv.getUint8(offset + 5),
+          dv.getUint8(offset + 6),
+          dv.getUint8(offset + 7)
+        );
+        if (!size || size < 8) {
+          // 잘못된 boxSize인 경우
+          return null;
+        }
+        if (name === boxName) {
+          return { start: offset, size };
+        }
+        offset += size;
+      }
+      return null;
+    }
+
+    function extractFtypMoov(buffer) {
+      const dv = new DataView(buffer);
+      // ftyp 찾기
+      const ftypBox = findBox(dv, 0, 'ftyp');
+      if (!ftypBox) return null;
+      // moov 찾기
+      // (ftyp 다음부터 찾도록 해도 되나, 혹시 순서가 다른 예외적 파일 고려해서 0에서 찾음)
+      const moovBox = findBox(dv, 0, 'moov');
+      if (!moovBox) return null;
+
+      // 실제 바이트 슬라이스
+      const ftypArr = buffer.slice(ftypBox.start, ftypBox.start + ftypBox.size);
+      const moovArr = buffer.slice(moovBox.start, moovBox.start + moovBox.size);
+      return { ftypArr, moovArr };
+    }
+
     // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행)
     if (request.method === 'POST' && url.pathname === '/upload') {
       try {
@@ -60,6 +99,7 @@ export default {
         if (!files || files.length === 0) {
           return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
         }
+
         // 1. 검열 단계: 모든 파일에 대해 검열 API 호출 (검열 통과 못하면 업로드 중단)
         for (const file of files) {
           if (file.type.startsWith('image/')) {
@@ -126,7 +166,7 @@ export default {
             }
 
             if (videoDuration < 60) {
-              // 1분 미만: 기존 방식 그대로 처리 (이 부분은 수정 X)
+              // 1분 미만: 기존 방식 그대로 처리
               const videoThreshold = 0.5;
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
@@ -197,18 +237,60 @@ export default {
                 return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
             } else {
-              // 1분 이상: 영상의 비트레이트를 계산하여 40초 단위로 구간별 검열 요청
-              // → 각 청크에 moov(box) 부분을 앞에 추가하여 Sightengine이 제대로 인식하도록 함
+              // ------------------------------
+              // 1분 이상: 세그먼트별 검열
+              // ------------------------------
               const videoThreshold = 0.5;
-              let reasons = []; // 실제 에러 메시지를 담을 배열
-              let debugLogs = []; // 디버그 로그를 담을 배열 (나중에 reasons에 추가)
-              const bitrate = file.size / videoDuration;
+              let reasons = []; 
+              let debugLogs = []; 
+              
+              // 파일 전체 arrayBuffer
+              const fileBuffer = await file.arrayBuffer();
+              // 비트레이트
+              const bitrate = fileBuffer.byteLength / videoDuration;
+
+              // ftyp+moov 추출
+              const boxes = extractFtypMoov(fileBuffer);
+              if (!boxes) {
+                // ftyp, moov를 찾지 못하면 그냥 전체 영상으로 검열 시도 (fallback)
+                debugLogs.push(`ftyp/moov not found. fallback to full check.`);
+                // (기존처럼 sync로 전체 영상 보내보기)
+                const fallbackForm = new FormData();
+                fallbackForm.append('media', new Blob([fileBuffer], { type: file.type }), 'upload');
+                fallbackForm.append('models', 'nudity,wad,offensive');
+                fallbackForm.append('api_user', env.SIGHTENGINE_API_USER);
+                fallbackForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
+                const fallbackResp = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
+                  method: 'POST',
+                  body: fallbackForm
+                });
+                const fallbackResult = await fallbackResp.json();
+                debugLogs.push(`fallback response: ${JSON.stringify(fallbackResult)}`);
+                // 최소한 이 fallback도 되지 않으면 어쩔 수 없음
+                if (fallbackResult.status === 'failure') {
+                  reasons.push(`fallback check failed: ${fallbackResult.error}`);
+                  reasons.push(`DEBUG LOGS: ${debugLogs.join(' | ')}`);
+                  return new Response(JSON.stringify({ success: false, error: `검열 실패(모든방법). ${reasons.join(" ")}` }), { status: 400 });
+                }
+                // fallback 결과에서 문제 있으면 리턴
+                let fallbackFrames = [];
+                if (fallbackResult.data && fallbackResult.data.frames) {
+                  fallbackFrames = Array.isArray(fallbackResult.data.frames) ? fallbackResult.data.frames : [fallbackResult.data.frames];
+                } else if (fallbackResult.frames) {
+                  fallbackFrames = Array.isArray(fallbackResult.frames) ? fallbackResult.frames : [fallbackResult.frames];
+                }
+                const fallbackDetected = checkFramesForCensorship(fallbackFrames, fallbackResult.data, videoThreshold);
+                if (fallbackDetected.length > 0) {
+                  reasons.push("검열됨: " + fallbackDetected.join(", "));
+                  reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
+                  return new Response(JSON.stringify({ success: false, error: reasons.join(" | ") }), { status: 400 });
+                }
+                // 문제 없으면 다음 단계 진행
+                continue; 
+              }
+
               let segments = [];
-              const segmentLength = 40; // 40초 단위 슬라이싱
-
-              // moov 박스 포함 용량(대략 2MB)
-              const moovBoxSize = 2 * 1024 * 1024;
-
+              const segmentLength = 40; // 40초 단위
               for (let currentStart = 0; currentStart < videoDuration; currentStart += segmentLength) {
                 segments.push({
                   start: currentStart,
@@ -222,9 +304,9 @@ export default {
                 const endByte = Math.floor((seg.start + seg.length) * bitrate);
                 debugLogs.push(`Segment ${i+1}/${segments.length}: seconds [${seg.start} ~ ${seg.start + seg.length}], bytes [${startByte} ~ ${endByte}]`);
 
-                // 실제 endByte가 파일 크기를 넘지 않도록 조정
-                const realEndByte = Math.min(endByte, file.size);
-                if (startByte >= file.size) {
+                // 범위 체크
+                const realEndByte = Math.min(endByte, fileBuffer.byteLength);
+                if (startByte >= fileBuffer.byteLength) {
                   debugLogs.push(`Segment ${i+1} startByte >= file.size, skipping`);
                   break;
                 }
@@ -233,16 +315,11 @@ export default {
                   break;
                 }
 
-                // (중요) Sightengine이 청크를 독립 MP4로 인식하려면 moov 박스가 필요
-                // → 파일의 첫 부분(2MB 정도)을 잘라서 앞에 붙임
-                const moovEnd = Math.min(moovBoxSize, file.size);
-                const moovBlob = file.slice(0, moovEnd, file.type);
+                // 영상 본문 chunk
+                const contentArr = fileBuffer.slice(startByte, realEndByte);
 
-                // 실제 영상 데이터 청크
-                const contentBlob = file.slice(startByte, realEndByte, file.type);
-
-                // 두 블롭을 합쳐서 하나의 독립된 MP4로 만듦
-                const segmentBlob = new Blob([moovBlob, contentBlob], { type: file.type });
+                // ftyp+moov+chunk 합쳐서 blob
+                const segmentBlob = new Blob([boxes.ftypArr, boxes.moovArr, contentArr], { type: file.type });
                 if (segmentBlob.size === 0) {
                   debugLogs.push(`Segment ${i+1} is zero bytes. Skipping censorship check for this segment.`);
                   continue;
@@ -261,63 +338,18 @@ export default {
                 const segmentResult = await segmentResponse.json();
                 debugLogs.push(`Segment ${i+1} response: ${JSON.stringify(segmentResult)}`);
 
+                // frame parsing
                 let frames = [];
                 if (segmentResult.data && segmentResult.data.frames) {
                   frames = Array.isArray(segmentResult.data.frames) ? segmentResult.data.frames : [segmentResult.data.frames];
                 } else if (segmentResult.frames) {
                   frames = Array.isArray(segmentResult.frames) ? segmentResult.frames : [segmentResult.frames];
                 }
-
-                if (frames.length > 0) {
-                  for (const frame of frames) {
-                    if (frame.nudity) {
-                      for (const key in frame.nudity) {
-                        if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                        if (Number(frame.nudity[key]) >= videoThreshold) {
-                          reasons.push("선정적 콘텐츠");
-                          break;
-                        }
-                      }
-                    }
-                    if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= videoThreshold) {
-                      reasons.push("욕설/모욕적 콘텐츠");
-                    }
-                    if (frame.wad) {
-                      for (const key in frame.wad) {
-                        if (Number(frame.wad[key]) >= videoThreshold) {
-                          reasons.push("잔인하거나 위험한 콘텐츠");
-                          break;
-                        }
-                      }
-                    }
-                  }
-                } else {
-                  if (segmentResult.data && segmentResult.data.nudity) {
-                    for (const key in segmentResult.data.nudity) {
-                      if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                      if (Number(segmentResult.data.nudity[key]) >= videoThreshold) {
-                        reasons.push("선정적 콘텐츠");
-                        break;
-                      }
-                    }
-                  }
-                  if (segmentResult.data && segmentResult.data.offensive && segmentResult.data.offensive.prob !== undefined && Number(segmentResult.data.offensive.prob) >= videoThreshold) {
-                    reasons.push("욕설/모욕적 콘텐츠");
-                  }
-                  if (segmentResult.data && segmentResult.data.wad) {
-                    for (const key in segmentResult.data.wad) {
-                      if (Number(segmentResult.data.wad[key]) >= videoThreshold) {
-                        reasons.push("잔인하거나 위험한 콘텐츠");
-                        break;
-                      }
-                    }
-                  }
-                }
-
-                if (reasons.length > 0) {
-                  // 에러 발생 시, 디버그 로그도 같이 전달
+                const detected = checkFramesForCensorship(frames, segmentResult.data, videoThreshold);
+                if (detected.length > 0) {
+                  reasons.push("검열됨: " + detected.join(", "));
                   reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
-                  return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
+                  return new Response(JSON.stringify({ success: false, error: reasons.join(" | ") }), { status: 400 });
                 }
               }
             }
@@ -355,14 +387,13 @@ export default {
         return new Response(JSON.stringify({ success: true, url: imageUrl }), {
           headers: { 'Content-Type': 'application/json' }
         });
+
       } catch (err) {
         return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
       }
     }
-
     // GET /{코드} : R2에서 파일 반환 또는 HTML 래퍼 페이지 제공 (다중 코드 지원)
     else if (request.method === 'GET' && /^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname)) {
-      // raw 파라미터가 있으면 원본 파일 바로 출력
       if (url.searchParams.get('raw') === '1') {
         const code = url.pathname.slice(1).split(",")[0];
         const object = await env.IMAGES.get(code);
@@ -373,7 +404,6 @@ export default {
         headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
         return new Response(object.body, { headers });
       }
-      // 아니면 HTML 페이지로 보여주기
       const codes = url.pathname.slice(1).split(",");
       const objects = await Promise.all(codes.map(async code => {
         const object = await env.IMAGES.get(code);
@@ -622,10 +652,69 @@ export default {
   </script>
 </body>
 </html>`;
+
       return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
     }
-  
+
     // 그 외의 경우 -> 기본 에셋 핸들러
     return env.ASSETS.fetch(request);
   }
 };
+
+// 세그먼트별 프레임 분석에서 사용하는 공통 함수(가독성 위해 별도 분리)
+function checkFramesForCensorship(frames, data, threshold) {
+  let reasons = [];
+
+  if (frames.length > 0) {
+    for (const frame of frames) {
+      // nudity
+      if (frame.nudity) {
+        for (const key in frame.nudity) {
+          if (["suggestive_classes", "context", "none"].includes(key)) continue;
+          if (Number(frame.nudity[key]) >= threshold) {
+            reasons.push("선정적 콘텐츠");
+            break;
+          }
+        }
+      }
+      // offensive
+      if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= threshold) {
+        reasons.push("욕설/모욕적 콘텐츠");
+      }
+      // wad
+      if (frame.wad) {
+        for (const key in frame.wad) {
+          if (Number(frame.wad[key]) >= threshold) {
+            reasons.push("잔인하거나 위험한 콘텐츠");
+            break;
+          }
+        }
+      }
+      if (reasons.length > 0) break; // 이미 검출되면 중단
+    }
+  } else {
+    // frame list가 아예 없으면 data에 있는 top-level 값을 참고
+    if (data && data.nudity) {
+      for (const key in data.nudity) {
+        if (["suggestive_classes", "context", "none"].includes(key)) continue;
+        if (Number(data.nudity[key]) >= threshold) {
+          reasons.push("선정적 콘텐츠");
+          break;
+        }
+      }
+    }
+    if (data && data.offensive && data.offensive.prob !== undefined && Number(data.offensive.prob) >= threshold) {
+      reasons.push("욕설/모욕적 콘텐츠");
+    }
+    if (data && data.wad) {
+      for (const key in data.wad) {
+        if (Number(data.wad[key]) >= threshold) {
+          reasons.push("잔인하거나 위험한 콘텐츠");
+          break;
+        }
+      }
+    }
+  }
+
+  return reasons;
+}
