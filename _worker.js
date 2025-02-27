@@ -1,6 +1,9 @@
 // 전역: 중복 요청 관리 Map
 const requestsInProgress = {};
 
+// *** [추가] 비디오 검열 중복 방지용 캐시(파일 단위) ***
+const videoScanCache = {};
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -199,123 +202,150 @@ async function handleImageCensorship(file, env) {
 // =======================
 async function handleVideoCensorship(file, env) {
   try {
-    // 50MB
-    if (file.size>50*1024*1024) {
-      return {ok:false,response:new Response(JSON.stringify({success:false,error:"영상 용량이 50MB 초과"}),{status:400})};
+    // *** [추가] 파일 해시를 구해, 이미 검열 진행 중이면 재사용 ***
+    const fileHash = await computeFileHash(file);
+    if (videoScanCache[fileHash]) {
+      // 이미 이 파일을 검열 중이거나 완료된 경우 => 기존 Promise(결과) 반환
+      console.log("[VideoCensorship] 동일 파일 중복 검열 회피 => 기존 결과 재사용");
+      return await videoScanCache[fileHash];
     }
+
+    // 50MB 제한
+    if (file.size>50*1024*1024) {
+      const overResp = new Response(JSON.stringify({success:false,error:"영상 용량이 50MB 초과"}),{status:400});
+      // 캐시에 기록 (바로 실패 응답)
+      videoScanCache[fileHash] = Promise.resolve({ ok:false, response: overResp });
+      return { ok:false, response: overResp };
+    }
+
     // 동영상 길이
     let videoDuration = await getMP4Duration(file);
     if (!videoDuration) videoDuration=0;
 
-    if (videoDuration<60 && videoDuration!==0) {
-      // 1분 미만 => check-sync
-      const sightForm = new FormData();
-      sightForm.append('media', file, 'upload');
-      sightForm.append('models','nudity,wad,offensive');
-      sightForm.append('api_user', env.SIGHTENGINE_API_USER);
-      sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
+    // 실제 검열 로직을 Promise로 감싸서, videoScanCache에 저장
+    const censorshipPromise = (async () => {
+      if (videoDuration<60 && videoDuration!==0) {
+        // -------------------------
+        // 1분 미만 => check-sync
+        // -------------------------
+        const sightForm = new FormData();
+        sightForm.append('media', file, 'upload');
+        sightForm.append('models','nudity,wad,offensive');
+        sightForm.append('api_user', env.SIGHTENGINE_API_USER);
+        sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
 
-      let syncResp=await fetch('https://api.sightengine.com/1.0/video/check-sync.json',{
-        method:'POST',
-        body:sightForm
-      });
-      if(!syncResp.ok) {
-        let errText=await syncResp.text();
-        return {ok:false,response:new Response(JSON.stringify({success:false,error:`동영상(sync) API 실패: ${errText}`}),{status:400})};
-      }
-      let data;
-      try {
-        data=await syncResp.json();
-      } catch(e) {
-        let fallback=await syncResp.text();
-        return {ok:false,response:new Response(JSON.stringify({success:false,error:`동영상(sync) JSON 오류: ${fallback}`}),{status:400})};
-      }
-
-      // frames
-      let frames=[];
-      if (data.data && data.data.frames) frames=Array.isArray(data.data.frames)?data.data.frames:[data.data.frames];
-      else if (data.frames) frames=Array.isArray(data.frames)?data.frames:[data.frames];
-
-      let found=checkFramesForCensorship(frames, data.data, 0.5);
-      if(found.length>0) {
-        return {ok:false,response:new Response(JSON.stringify({success:false,error:`검열됨: ${found.join(", ")}`}),{status:400})};
-      }
-      return {ok:true};
-    }
-    else {
-      // 1분 이상 => async=1
-      const sightForm=new FormData();
-      sightForm.append('media', file, 'upload');
-      sightForm.append('models','nudity,wad,offensive');
-      sightForm.append('api_user', env.SIGHTENGINE_API_USER);
-      sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
-      sightForm.append('async','1');
-
-      let initResp=await fetch('https://api.sightengine.com/1.0/video/check.json',{
-        method:'POST',
-        body:sightForm
-      });
-      if(!initResp.ok) {
-        let errText=await initResp.text();
-        return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 업로드 실패: ${errText}`}),{status:400})};
-      }
-      let initData;
-      try {
-        initData=await initResp.json();
-      } catch(e) {
-        let fallback=await initResp.text();
-        return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 업로드 JSON 오류: ${fallback}`}),{status:400})};
-      }
-      if(initData.status==='failure') {
-        return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 업로드 실패: ${initData.error}`}),{status:400})};
-      }
-      if(!initData.request||!initData.request.id) {
-        return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 응답에 request.id 없음`}),{status:400})};
-      }
-      let reqId=initData.request.id;
-
-      // 폴링
-      let finalData=null;
-      let maxAttempts=6; // 5초씩 6번
-      while(maxAttempts>0) {
-        await new Promise(r=>setTimeout(r,5000));
-        const statusUrl=`https://api.sightengine.com/1.0/video/check.json?request_id=${reqId}&models=nudity,wad,offensive&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`;
-        let statusResp=await fetch(statusUrl);
-        if(!statusResp.ok) {
-          let errText=await statusResp.text();
-          return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 폴링 실패: ${errText}`}),{status:400})};
+        let syncResp=await fetch('https://api.sightengine.com/1.0/video/check-sync.json',{
+          method:'POST',
+          body:sightForm
+        });
+        if(!syncResp.ok) {
+          let errText=await syncResp.text();
+          return {ok:false,response:new Response(JSON.stringify({success:false,error:`동영상(sync) API 실패: ${errText}`}),{status:400})};
         }
-        let statusData;
+        let data;
         try {
-          statusData=await statusResp.json();
+          data=await syncResp.json();
         } catch(e) {
-          let fallback=await statusResp.text();
-          return {ok:false,response:new Response(JSON.stringify({success:false,error:`폴링 JSON 오류: ${fallback}`}),{status:400})};
+          let fallback=await syncResp.text();
+          return {ok:false,response:new Response(JSON.stringify({success:false,error:`동영상(sync) JSON 오류: ${fallback}`}),{status:400})};
         }
-        if(statusData.status==='failure') {
-          return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 검열 실패: ${statusData.error}`}),{status:400})};
-        }
-        if(statusData.progress_status==='finished') {
-          finalData=statusData;
-          break;
-        }
-        maxAttempts--;
-      }
-      if(!finalData) {
-        return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 검열이 30초 내에 끝나지 않음`}),{status:408})};
-      }
 
-      // 최종 프레임 검사
-      let frames=[];
-      if (finalData.data && finalData.data.frames) frames=Array.isArray(finalData.data.frames)?finalData.data.frames:[finalData.data.frames];
-      else if(finalData.frames) frames=Array.isArray(finalData.frames)?finalData.frames:[finalData.frames];
+        // frames
+        let frames=[];
+        if (data.data && data.data.frames) frames=Array.isArray(data.data.frames)?data.data.frames:[data.data.frames];
+        else if (data.frames) frames=Array.isArray(data.frames)?data.frames:[data.frames];
 
-      let found=checkFramesForCensorship(frames, finalData.data, 0.5);
-      if(found.length>0) {
-        return {ok:false,response:new Response(JSON.stringify({success:false,error:`검열됨: ${found.join(", ")}`}),{status:400})};
+        let found=checkFramesForCensorship(frames, data.data, 0.5);
+        if(found.length>0) {
+          return {ok:false,response:new Response(JSON.stringify({success:false,error:`검열됨: ${found.join(", ")}`}),{status:400})};
+        }
+        return {ok:true};
       }
-      return {ok:true};
-    }
+      else {
+        // -------------------------
+        // 1분 이상 => async=1
+        // -------------------------
+        const sightForm=new FormData();
+        sightForm.append('media', file, 'upload');
+        sightForm.append('models','nudity,wad,offensive');
+        sightForm.append('api_user', env.SIGHTENGINE_API_USER);
+        sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
+        sightForm.append('async','1');
+
+        let initResp=await fetch('https://api.sightengine.com/1.0/video/check.json',{
+          method:'POST',
+          body:sightForm
+        });
+        if(!initResp.ok) {
+          let errText=await initResp.text();
+          return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 업로드 실패: ${errText}`}),{status:400})};
+        }
+        let initData;
+        try {
+          initData=await initResp.json();
+        } catch(e) {
+          let fallback=await initResp.text();
+          return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 업로드 JSON 오류: ${fallback}`}),{status:400})};
+        }
+        if(initData.status==='failure') {
+          return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 업로드 실패: ${initData.error}`}),{status:400})};
+        }
+        if(!initData.request||!initData.request.id) {
+          return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 응답에 request.id 없음`}),{status:400})};
+        }
+        let reqId=initData.request.id;
+
+        // 폴링
+        let finalData=null;
+        let maxAttempts=6; // 5초씩 6번 (최대 30초 대기)
+        while(maxAttempts>0) {
+          await new Promise(r=>setTimeout(r,5000));
+          const statusUrl=`https://api.sightengine.com/1.0/video/check.json?request_id=${reqId}&models=nudity,wad,offensive&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`;
+          let statusResp=await fetch(statusUrl);
+          if(!statusResp.ok) {
+            let errText=await statusResp.text();
+            return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 폴링 실패: ${errText}`}),{status:400})};
+          }
+          let statusData;
+          try {
+            statusData=await statusResp.json();
+          } catch(e) {
+            let fallback=await statusResp.text();
+            return {ok:false,response:new Response(JSON.stringify({success:false,error:`폴링 JSON 오류: ${fallback}`}),{status:400})};
+          }
+          if(statusData.status==='failure') {
+            return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 검열 실패: ${statusData.error}`}),{status:400})};
+          }
+          if(statusData.progress_status==='finished') {
+            finalData=statusData;
+            break;
+          }
+          maxAttempts--;
+        }
+        if(!finalData) {
+          return {ok:false,response:new Response(JSON.stringify({success:false,error:`비동기 검열이 30초 내에 끝나지 않음`}),{status:408})};
+        }
+
+        // 최종 프레임 검사
+        let frames=[];
+        if (finalData.data && finalData.data.frames) frames=Array.isArray(finalData.data.frames)?finalData.data.frames:[finalData.data.frames];
+        else if(finalData.frames) frames=Array.isArray(finalData.frames)?finalData.frames:[finalData.frames];
+
+        let found=checkFramesForCensorship(frames, finalData.data, 0.5);
+        if(found.length>0) {
+          return {ok:false,response:new Response(JSON.stringify({success:false,error:`검열됨: ${found.join(", ")}`}),{status:400})};
+        }
+        return {ok:true};
+      }
+    })();
+
+    // 캐시에 Promise 저장 (동일 파일 요청 시 해당 Promise를 반환)
+    videoScanCache[fileHash] = censorshipPromise;
+
+    // 실제 검열 결과를 받아서 리턴
+    const result = await censorshipPromise;
+    return result;
+
   } catch(e) {
     console.log("handleVideoCensorship error:", e);
     return {ok:false,response:new Response(JSON.stringify({success:false,error:e.message}),{status:500})};
@@ -618,4 +648,39 @@ function renderHTML(mediaTags, host) {
   </script>
 </body>
 </html>`;
+}
+
+// =======================
+// [추가] 파일 해시 계산 함수
+// =======================
+async function computeFileHash(file) {
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  // 해시는 Base64 등 편한 형식으로 변환
+  return btoa(String.fromCharCode(...new Uint8Array(digest)));
+}
+
+// =======================
+// 프레임 검열 함수 (기존 그대로)
+// =======================
+function checkFramesForCensorship(frames, data, threshold = 0.5) {
+  let found=[];
+  for (const f of frames) {
+    if (f.nudity) {
+      const { raw, partial, is_nude } = f.nudity;
+      if (is_nude===true || (raw && raw>threshold) || (partial && partial>threshold)) {
+        if(!found.includes("선정적 콘텐츠")) found.push("선정적 콘텐츠");
+      }
+    }
+    if (f.offensive && f.offensive.prob>threshold) {
+      if(!found.includes("욕설/모욕적 콘텐츠")) found.push("욕설/모욕적 콘텐츠");
+    }
+    if (f.wad) {
+      const { weapon, alcohol, drugs } = f.wad;
+      if ((weapon && weapon>threshold)||(alcohol && alcohol>threshold)||(drugs && drugs>threshold)){
+        if(!found.includes("잔인하거나 위험한 콘텐츠")) found.push("잔인하거나 위험한 콘텐츠");
+      }
+    }
+  }
+  return found;
 }
