@@ -99,7 +99,7 @@ export default {
       for (const { code, object } of objects) {
         if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
           // 동영상 (controls 추가)
-          mediaTags += `<video src="https://${url.host}/${code}?raw=1" class="wrapped landscape" controls></video>\n`;
+          mediaTags += `<video src="https://${url.host}/${code}?raw=1" class="wrapped landscape"></video>\n`;
         } else {
           // 이미지 (이미지 클릭 확대/축소 유지)
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
