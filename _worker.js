@@ -99,7 +99,7 @@ export default {
       for (const { code, object } of objects) {
         if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
           // 동영상
-          mediaTags += `<video src="https://${url.host}/${code}?raw=1"></video>\n`;
+          mediaTags += `<video src="https://${url.host}/${code}?raw=1" width: 40vw; height: auto;></video>\n`;
         } else {
           // 이미지
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
