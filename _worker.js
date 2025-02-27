@@ -99,7 +99,7 @@ export default {
       for (const { code, object } of objects) {
         if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
           // 동영상
-          mediaTags += `<video src="https://${url.host}/${code}?raw=1" width: 40vw; height: auto;></video>\n`;
+          mediaTags += `<video src="https://${url.host}/${code}?raw=1"></video>\n`;
         } else {
           // 이미지
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
@@ -126,6 +126,23 @@ async function handleUpload(request, env) {
   const files = formData.getAll('file');
   if (!files || files.length === 0) {
     return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
+  }
+
+  // 업로드 가능 파일 형식 제한: 검열 가능한 이미지 형식과 검열 가능한 영상 형식으로 제한
+  const allowedImageTypes = ["image/jpeg", "image/png", "image/gif"];
+  const allowedVideoTypes = ["video/mp4", "video/webm", "video/ogg"];
+  for (const file of files) {
+    if (file.type.startsWith('image/')) {
+      if (!allowedImageTypes.includes(file.type)) {
+        return new Response(JSON.stringify({ success: false, error: '지원하지 않는 이미지 형식입니다.' }), { status: 400 });
+      }
+    } else if (file.type.startsWith('video/')) {
+      if (!allowedVideoTypes.includes(file.type)) {
+        return new Response(JSON.stringify({ success: false, error: '지원하지 않는 동영상 형식입니다.' }), { status: 400 });
+      }
+    } else {
+      return new Response(JSON.stringify({ success: false, error: '지원하지 않는 파일 형식입니다.' }), { status: 400 });
+    }
   }
 
   // =========================
