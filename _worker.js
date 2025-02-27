@@ -837,7 +837,7 @@ function renderHTML(mediaTags, host) {
         display: block;
       }
     }
-    .player-container * {
+    .player-container video {
         width: 40vw;
         height: auto;
         }
