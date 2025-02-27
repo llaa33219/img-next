@@ -8,7 +8,7 @@ export default {
         headers: Object.fromEntries(request.headers)
       });
       console.log("Worker triggered:", request.method, url.pathname);
-  
+
       // 헬퍼 함수: ArrayBuffer를 Base64 문자열로 변환
       const arrayBufferToBase64 = (buffer) => {
         let binary = '';
@@ -19,7 +19,7 @@ export default {
         }
         return btoa(binary);
       };
-  
+
       // 헬퍼 함수: MP4 파일에서 mvhd 박스를 찾아 duration(초)를 추출 (버전0,1 지원)
       async function getMP4Duration(file) {
         try {
@@ -51,7 +51,7 @@ export default {
           return null;
         }
       }
-  
+
       // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행)
       if (request.method === 'POST' && url.pathname === '/upload') {
         try {
@@ -81,19 +81,19 @@ export default {
                 // 리사이징 실패 시 원본 사용
                 fileForCensorship = file;
               }
-  
+
               const sightForm = new FormData();
               sightForm.append('media', fileForCensorship.slice(0, fileForCensorship.size, fileForCensorship.type), 'upload');
               sightForm.append('models', 'nudity,wad,offensive');
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
-  
+
               const sightResponse = await fetch('https://api.sightengine.com/1.0/check.json', {
                 method: 'POST',
                 body: sightForm
               });
               const sightResult = await sightResponse.json();
-  
+
               let reasons = [];
               if (sightResult.nudity) {
                 const { is_nude, raw, partial } = sightResult.nudity;
@@ -118,13 +118,14 @@ export default {
               if (file.size > 50 * 1024 * 1024) {
                 return new Response(JSON.stringify({ success: false, error: "영상 용량이 50MB를 초과합니다." }), { status: 400 });
               }
-  
+
               // 2) 영상 길이(초) 확인 (mp4 기준)
               let videoDuration = await getMP4Duration(file);
               if (videoDuration === null) {
                 videoDuration = 0;
               }
-  
+              console.log("videoDuration:", videoDuration); // videoDuration 값 로그 출력
+
               if (videoDuration < 60) {
                 // 1분 미만: 기존 방식 그대로 처리
                 const videoThreshold = 0.5;
@@ -133,13 +134,13 @@ export default {
                 sightForm.append('models', 'nudity,wad,offensive');
                 sightForm.append('api_user', env.SIGHTENGINE_API_USER);
                 sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
-  
+
                 const sightResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                   method: 'POST',
                   body: sightForm
                 });
                 const sightResult = await sightResponse.json();
-  
+
                 let reasons = [];
                 let frames = [];
                 if (sightResult.data && sightResult.data.frames) {
@@ -147,7 +148,7 @@ export default {
                 } else if (sightResult.frames) {
                   frames = Array.isArray(sightResult.frames) ? sightResult.frames : [sightResult.frames];
                 }
-  
+
                 if (frames.length > 0) {
                   for (const frame of frames) {
                     if (frame.nudity) {
@@ -196,88 +197,132 @@ export default {
                 if (reasons.length > 0) {
                   return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
-            } else {
+              } else {
                 // 1분 이상: 영상의 비트레이트를 계산하여 40초 단위로 구간별 검열 요청
                 const videoThreshold = 0.5;
-                let reasons = [];
-                let debugLogs = [];
+                let reasons = []; // 실제 에러 메시지를 담을 배열
+                let debugLogs = []; // 디버그 로그를 담을 배열 (나중에 reasons에 추가)
                 const bitrate = file.size / videoDuration;
                 let segments = [];
-                const segmentLength = 40;
+                const segmentLength = 40; // 40초 단위 슬라이싱
                 for (let currentStart = 0; currentStart < videoDuration; currentStart += segmentLength) {
                   segments.push({ start: currentStart, length: Math.min(segmentLength, videoDuration - currentStart) });
                 }
-              
+
                 for (let i = 0; i < segments.length; i++) {
                   const seg = segments[i];
                   const startByte = Math.floor(seg.start * bitrate);
                   const endByte = Math.floor((seg.start + seg.length) * bitrate);
                   debugLogs.push(`Segment ${i+1}/${segments.length}: seconds [${seg.start} ~ ${seg.start + seg.length}], bytes [${startByte} ~ ${endByte}]`);
-              
-                  const segmentBlob = file.slice(startByte, endByte, file.type);
+
+                  let segmentBlob;
+                  try {
+                    segmentBlob = file.slice(startByte, endByte, file.type);
+                    debugLogs.push(`Segment ${i+1} segmentBlob size: ${segmentBlob.size}`); // segmentBlob 크기 로그 추가
+                  } catch (sliceError) {
+                    debugLogs.push(`Segment ${i+1} Blob slice error: ${sliceError.message}`);
+                    reasons.push(`Blob slice 에러 발생: ${sliceError.message}`);
+                    reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
+                    return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
+                  }
+
+
                   const segmentForm = new FormData();
                   segmentForm.append('media', segmentBlob, 'upload');
                   segmentForm.append('models', 'nudity,wad,offensive');
                   segmentForm.append('api_user', env.SIGHTENGINE_API_USER);
                   segmentForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
-              
-                  const segmentResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
-                    method: 'POST',
-                    body: segmentForm
-                  });
-                  if (!segmentResponse.ok) {
-                    debugLogs.push(`Segment ${i+1} API call failed: ${segmentResponse.status} ${segmentResponse.statusText}`);
-                    reasons.push("API 호출 실패");
-                    break;
+
+                  let segmentResponse;
+                  try {
+                    segmentResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
+                      method: 'POST',
+                      body: segmentForm
+                    });
+                    debugLogs.push(`Segment ${i+1} response status: ${segmentResponse.status}`); // HTTP 응답 상태 코드 로그 추가
+                    debugLogs.push(`Segment ${i+1} response ok: ${segmentResponse.ok}`);     // HTTP 응답 성공 여부 로그 추가
+                  } catch (fetchError) {
+                    debugLogs.push(`Segment ${i+1} API fetch error: ${fetchError.message}`);
+                    reasons.push(`API 요청 에러 발생: ${fetchError.message}`);
+                    reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
+                    return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                   }
-                  const segmentResult = await segmentResponse.json();
-                  debugLogs.push(`Segment ${i+1} response: ${JSON.stringify(segmentResult)}`);
-              
-                  let frames = [];
-                  if (segmentResult.data && segmentResult.data.frames) {
-                    frames = Array.isArray(segmentResult.data.frames) ? segmentResult.data.frames : [segmentResult.data.frames];
-                  } else if (segmentResult.frames) {
-                    frames = Array.isArray(segmentResult.frames) ? segmentResult.frames : [segmentResult.frames];
-                  } else {
-                    debugLogs.push(`Segment ${i+1} has no frames data: ${JSON.stringify(segmentResult)}`);
-                  }
-              
-                  if (frames.length > 0) {
-                    for (const frame of frames) {
-                      if (frame.nudity) {
-                        for (const key in frame.nudity) {
+
+
+                  try {
+                    const segmentResult = await segmentResponse.json();
+                    debugLogs.push(`Segment ${i+1} response: ${JSON.stringify(segmentResult)}`);
+
+                    let frames = [];
+                    if (segmentResult.data && segmentResult.data.frames) {
+                      frames = Array.isArray(segmentResult.data.frames) ? segmentResult.data.frames : [segmentResult.data.frames];
+                    } else if (segmentResult.frames) {
+                      frames = Array.isArray(segmentResult.frames) ? segmentResult.frames : [segmentResult.frames];
+                    }
+
+                    if (frames.length > 0) {
+                      for (const frame of frames) {
+                        if (frame.nudity) {
+                          for (const key in frame.nudity) {
+                            if (["suggestive_classes", "context", "none"].includes(key)) continue;
+                            if (Number(frame.nudity[key]) >= videoThreshold) {
+                              reasons.push("선정적 콘텐츠");
+                              break;
+                            }
+                          }
+                        }
+                        if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= videoThreshold) {
+                          reasons.push("욕설/모욕적 콘텐츠");
+                        }
+                        if (frame.wad) {
+                          for (const key in frame.wad) {
+                            if (Number(frame.wad[key]) >= videoThreshold) {
+                              reasons.push("잔인하거나 위험한 콘텐츠");
+                              break;
+                            }
+                          }
+                        }
+                      }
+                    } else {
+                      if (segmentResult.data && segmentResult.data.nudity) {
+                        for (const key in segmentResult.data.nudity) {
                           if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                          const value = frame.nudity[key];
-                          if (typeof value === 'number' && value >= videoThreshold) {
+                          if (Number(segmentResult.data.nudity[key]) >= videoThreshold) {
                             reasons.push("선정적 콘텐츠");
                             break;
                           }
                         }
                       }
-                      if (frame.offensive && typeof frame.offensive.prob === 'number' && frame.offensive.prob >= videoThreshold) {
+                      if (segmentResult.data && segmentResult.data.offensive && segmentResult.data.offensive.prob !== undefined && Number(segmentResult.data.offensive.prob) >= videoThreshold) {
                         reasons.push("욕설/모욕적 콘텐츠");
                       }
-                      if (frame.wad) {
-                        for (const key in frame.wad) {
-                          const value = frame.wad[key];
-                          if (typeof value === 'number' && value >= videoThreshold) {
+                      if (segmentResult.data && segmentResult.data.wad) {
+                        for (const key in segmentResult.data.wad) {
+                          if (Number(segmentResult.data.wad[key]) >= videoThreshold) {
                             reasons.push("잔인하거나 위험한 콘텐츠");
                             break;
                           }
                         }
                       }
                     }
-                  }
-              
-                  if (reasons.length > 0) {
+
+                    if (reasons.length > 0) {
+                      // 에러 발생 시, 디버그 로그도 같이 전달
+                      reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
+                      return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
+                    }
+
+                  } catch (jsonError) {
+                    debugLogs.push(`Segment ${i+1} JSON parsing error: ${jsonError.message}`); // JSON 파싱 에러 로그 추가
+                    reasons.push("JSON 파싱 에러 발생"); // 에러 발생 이유에 추가 (디버깅 편의를 위해)
                     reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
-                    return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
+                    return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 }); // 즉시 에러 응답
                   }
                 }
               }
             }
           }
-  
+
           // 2. 검열 통과 후: 각 파일 별로 R2에 저장
           let codes = [];
           for (const file of files) {
@@ -356,13 +401,13 @@ export default {
         padding: 20px;
         overflow: auto;
       }
-    
+
       .upload-container {
         display: flex;
         flex-direction: column;
         align-items: center;
       }
-    
+
       button {
         background-color: #007BFF;
         color: white;
@@ -379,24 +424,24 @@ export default {
         font-size: 18px;
         text-align: center;
       }
-    
+
       button:hover {
         background-color: #005BDD;
         transform: translateY(2px);
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
       }
-    
+
       button:active {
         background-color: #0026a3;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
       }
-    
+
       #fileNameDisplay {
         font-size: 16px;
         margin-top: 10px;
         color: #333;
       }
-    
+
       #linkBox {
         width: 500px;
         height: 40px;
@@ -406,7 +451,7 @@ export default {
         text-align: center;
         border-radius: 14px;
       }
-    
+
       .copy-button {
         background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center;
         background-size: contain;
@@ -417,13 +462,13 @@ export default {
         margin-left: 10px;
         vertical-align: middle;
       }
-    
+
       .link-container {
         display: flex;
         justify-content: center;
         align-items: center;
       }
-      
+
       #imageContainer img,
       #imageContainer video {
         width: 40vw;
@@ -437,7 +482,7 @@ export default {
         object-fit: contain;
         cursor: zoom-in;
       }
-    
+
       #imageContainer img.landscape,
       #imageContainer video.landscape {
         width: 40vw;
@@ -445,7 +490,7 @@ export default {
         max-width: 40vw;
         cursor: zoom-in;
       }
-    
+
       #imageContainer img.portrait,
       #imageContainer video.portrait {
         width: auto;
@@ -453,7 +498,7 @@ export default {
         max-width: 40vw;
         cursor: zoom-in;
       }
-    
+
       #imageContainer img.expanded.landscape,
       #imageContainer video.expanded.landscape {
         width: 80vw;
@@ -462,7 +507,7 @@ export default {
         max-height: 100vh;
         cursor: zoom-out;
       }
-    
+
       #imageContainer img.expanded.portrait,
       #imageContainer video.expanded.portrait {
         width: auto;
@@ -471,11 +516,11 @@ export default {
         max-height: 100vh;
         cursor: zoom-out;
       }
-    
+
       .container {
         text-align: center;
       }
-    
+
       .header-content {
         display: flex;
         align-items: center;
@@ -484,12 +529,12 @@ export default {
         font-size: 30px;
         text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
       }
-    
+
       .header-content img {
         margin-right: 20px;
         border-radius: 14px;
       }
-    
+
       .toggle-button {
         background-color: #28a745;
         color: white;
@@ -504,19 +549,19 @@ export default {
         font-size: 24px;
         margin-left: 20px;
       }
-    
+
       .hidden {
         display: none;
       }
-    
+
       .title-img-desktop {
         display: block;
       }
-    
+
       .title-img-mobile {
         display: none;
       }
-    
+
       @media (max-width: 768px) {
         button {
           width: 300px;
@@ -575,8 +620,7 @@ export default {
   </html>`;
         return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
       }
-    
+
       return env.ASSETS.fetch(request);
     }
   };
-  
