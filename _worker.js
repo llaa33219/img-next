@@ -837,6 +837,10 @@ function renderHTML(mediaTags, host) {
         display: block;
       }
     }
+    .player-container, .player-container * {
+        width: 40vw;
+        height: auto;
+        }
   </style>
   <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
   <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
