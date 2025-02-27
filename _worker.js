@@ -99,7 +99,7 @@ export default {
       for (const { code, object } of objects) {
         if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
           // 동영상
-          mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls onclick="toggleZoom(this)"></video>\n`;
+          mediaTags += `<video src="https://${url.host}/${code}?raw=1" class="wrapped landscape"></video>\n`;
         } else {
           // 이미지
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
@@ -846,7 +846,8 @@ function renderHTML(mediaTags, host) {
 <body>
   <div class="header-content">
     <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" style="width: 120px; height: auto; cursor: pointer;" onclick="location.href='/';">
-    <h1>이미지 공유</h1>
+      <h1 class="title-img-desktop">이미지 공유</h1>
+      <h1 class="title-img-mobile">이미지<br>공유</h1>
   </div>
   <div id="imageContainer">
     ${mediaTags}
