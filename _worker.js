@@ -1,7 +1,6 @@
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    // 디버깅: 들어온 요청의 기본 정보를 출력합니다.
     console.log("Incoming Request:", {
       method: request.method,
       url: request.url,
@@ -9,7 +8,7 @@ export default {
     });
     console.log("Worker triggered:", request.method, url.pathname);
 
-    // 헬퍼 함수: ArrayBuffer를 Base64 문자열로 변환
+    // 헬퍼 함수1: ArrayBuffer -> Base64
     const arrayBufferToBase64 = (buffer) => {
       let binary = '';
       const bytes = new Uint8Array(buffer);
@@ -20,24 +19,24 @@ export default {
       return btoa(binary);
     };
 
-    // 헬퍼 함수: MP4 파일에서 mvhd 박스를 찾아 duration(초)를 추출 (버전0,1 지원)
+    // 헬퍼 함수2: MP4 파일에서 mvhd 박스를 찾아 duration(초)를 추출 (버전0,1 지원)
     async function getMP4Duration(file) {
       try {
         const buffer = await file.arrayBuffer();
         const dv = new DataView(buffer);
         const uint8 = new Uint8Array(buffer);
-        // mvhd 문자열의 아스키 코드: m=109, v=118, h=104, d=100
+        // 'm','v','h','d' = 109,118,104,100
         for (let i = 0; i < uint8.length - 4; i++) {
           if (uint8[i] === 109 && uint8[i + 1] === 118 && uint8[i + 2] === 104 && uint8[i + 3] === 100) {
             const boxStart = i - 4; // mvhd 박스: size(4)+type(4)
             const version = dv.getUint8(boxStart + 8);
             if (version === 0) {
-              // version 0: header = 4+4+1+3+4+4+4+4
+              // version 0
               const timescale = dv.getUint32(boxStart + 20);
               const duration = dv.getUint32(boxStart + 24);
               return duration / timescale;
             } else if (version === 1) {
-              // version 1: header = 4+4+1+3+8+8+4+8
+              // version 1
               const timescale = dv.getUint32(boxStart + 28);
               const high = dv.getUint32(boxStart + 32);
               const low = dv.getUint32(boxStart + 36);
@@ -48,14 +47,15 @@ export default {
         }
         return null;
       } catch (e) {
+        console.log("getMP4Duration error:", e);
         return null;
       }
     }
 
-    // 공통 함수: 각 프레임(또는 top-level data)에서 검열 사유 체크
+    // 헬퍼 함수3: frames/data에서 검열 사유를 찾는 함수
     function checkFramesForCensorship(frames, data, threshold) {
       let reasons = [];
-      if (frames.length > 0) {
+      if (frames && frames.length > 0) {
         for (const frame of frames) {
           if (frame.nudity) {
             for (const key in frame.nudity) {
@@ -80,7 +80,7 @@ export default {
           if (reasons.length > 0) break;
         }
       } else {
-        // frames가 없으면 data의 상위 nudity/offensive/wad에서 체크
+        // frames가 없으면 data 최상위
         if (data && data.nudity) {
           for (const key in data.nudity) {
             if (["suggestive_classes", "context", "none"].includes(key)) continue;
@@ -105,7 +105,9 @@ export default {
       return reasons;
     }
 
-    // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행 -> 통과 시 R2에 저장)
+    // ---------------------------
+    // POST /upload : 다중 파일 업로드 (검열 -> R2 저장)
+    // ---------------------------
     if (request.method === 'POST' && url.pathname === '/upload') {
       try {
         const formData = await request.formData();
@@ -114,18 +116,17 @@ export default {
           return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
         }
 
-        // 각 파일마다 검열을 수행
         for (const file of files) {
-          // 파일별로 "정상 검열이 최소 한 번이라도 이루어졌고, 최종 통과했는지" 기록
-          let fileCensoredOk = false;
+          console.log(`Processing file: type=${file.type}, size=${file.size}`);
 
+          // ---------------------------
+          // 이미지 검열
+          // ---------------------------
           if (file.type.startsWith('image/')) {
-            // -------------------------------------------
-            // 이미지 검열
-            // -------------------------------------------
+            console.log(">>> 이미지 검열 로직");
             let fileForCensorship = file;
             try {
-              // 이미지 리사이징: 최대 600px 축소하여 검열 속도 향상
+              // 이미지 리사이징(600px) -> 검열 속도↑
               const buffer = await file.arrayBuffer();
               const base64 = arrayBufferToBase64(buffer);
               const dataUrl = `data:${file.type};base64,${base64}`;
@@ -135,7 +136,7 @@ export default {
               const resizedResponse = await fetch(reqForResize);
               fileForCensorship = await resizedResponse.blob();
             } catch (e) {
-              // 리사이징 실패 시 원본 사용
+              console.log("이미지 리사이즈 실패:", e);
               fileForCensorship = file;
             }
 
@@ -145,14 +146,13 @@ export default {
             sightForm.append('api_user', env.SIGHTENGINE_API_USER);
             sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
 
+            console.log("이미지 검열 API 호출");
             const sightResponse = await fetch('https://api.sightengine.com/1.0/check.json', {
               method: 'POST',
               body: sightForm
             });
             const sightResult = await sightResponse.json();
-
-            // 여기서 "검열 시도"는 했으므로 true로 설정
-            fileCensoredOk = true;
+            console.log("이미지 검열 결과:", sightResult);
 
             let reasons = [];
             if (sightResult.nudity) {
@@ -168,28 +168,29 @@ export default {
               reasons.push("잔인하거나 위험한 콘텐츠");
             }
             if (reasons.length > 0) {
+              console.log("이미지 검열 불량:", reasons);
               return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
             }
 
+          // ---------------------------
+          // 동영상 검열
+          // ---------------------------
           } else if (file.type.startsWith('video/')) {
-            // -------------------------------------------
-            // 동영상 검열 (1분 미만은 sync, 1분 이상은 분할)
-            // -------------------------------------------
-            // 1) 용량 체크: 50MB 초과면 경고
+            console.log(">>> 동영상 검열 로직");
+            // (1) 용량 체크
             if (file.size > 50 * 1024 * 1024) {
+              console.log("영상 용량 초과");
               return new Response(JSON.stringify({ success: false, error: "영상 용량이 50MB를 초과합니다." }), { status: 400 });
             }
 
-            // 2) 영상 길이(초) 확인 (mp4 기준)
+            // (2) 길이 체크
             let videoDuration = await getMP4Duration(file);
-            if (videoDuration === null) {
-              videoDuration = 0;
-            }
+            if (!videoDuration) videoDuration = 0;
+            console.log("동영상 길이(초)=", videoDuration);
 
-            if (videoDuration < 60) {
-              // -------------------------
-              // 1분 미만: 한 번에 검열
-              // -------------------------
+            // 1분 미만 & duration>0
+            if (videoDuration < 60 && videoDuration !== 0) {
+              console.log("1분 미만 => video/check-sync.json");
               const videoThreshold = 0.5;
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
@@ -197,222 +198,114 @@ export default {
               sightForm.append('api_user', env.SIGHTENGINE_API_USER);
               sightForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
 
-              // 검열 요청
               const sightResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                 method: 'POST',
                 body: sightForm
               });
               const sightResult = await sightResponse.json();
+              console.log("1분 미만 영상 검열 결과:", sightResult);
 
-              // "검열 시도"했으므로
-              fileCensoredOk = true;
-
-              let reasons = [];
               let frames = [];
               if (sightResult.data && sightResult.data.frames) {
                 frames = Array.isArray(sightResult.data.frames) ? sightResult.data.frames : [sightResult.data.frames];
               } else if (sightResult.frames) {
                 frames = Array.isArray(sightResult.frames) ? sightResult.frames : [sightResult.frames];
               }
-
-              if (frames.length > 0) {
-                for (const frame of frames) {
-                  if (frame.nudity) {
-                    for (const key in frame.nudity) {
-                      if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                      if (Number(frame.nudity[key]) >= videoThreshold) {
-                        reasons.push("선정적 콘텐츠");
-                        break;
-                      }
-                    }
-                  }
-                  if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= videoThreshold) {
-                    reasons.push("욕설/모욕적 콘텐츠");
-                  }
-                  if (frame.wad) {
-                    for (const key in frame.wad) {
-                      if (Number(frame.wad[key]) >= videoThreshold) {
-                        reasons.push("잔인하거나 위험한 콘텐츠");
-                        break;
-                      }
-                    }
-                  }
-                }
-              } else {
-                // frames가 없으면 data 최상위
-                if (sightResult.data && sightResult.data.nudity) {
-                  for (const key in sightResult.data.nudity) {
-                    if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                    if (Number(sightResult.data.nudity[key]) >= videoThreshold) {
-                      reasons.push("선정적 콘텐츠");
-                      break;
-                    }
-                  }
-                }
-                if (sightResult.data && sightResult.data.offensive && sightResult.data.offensive.prob !== undefined && Number(sightResult.data.offensive.prob) >= videoThreshold) {
-                  reasons.push("욕설/모욕적 콘텐츠");
-                }
-                if (sightResult.data && sightResult.data.wad) {
-                  for (const key in sightResult.data.wad) {
-                    if (Number(sightResult.data.wad[key]) >= videoThreshold) {
-                      reasons.push("잔인하거나 위험한 콘텐츠");
-                      break;
-                    }
-                  }
-                }
-              }
-              if (reasons.length > 0) {
-                return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
+              const found = checkFramesForCensorship(frames, sightResult.data, videoThreshold);
+              if (found.length > 0) {
+                console.log("1분 미만 동영상 불량:", found);
+                return new Response(JSON.stringify({ success: false, error: "검열됨: " + found.join(", ") }), { status: 400 });
               }
 
             } else {
-              // ------------------------------------------------------
-              // 1분 이상: 분할 검열 시도 (40초 단위 or fallback 등)
-              // ------------------------------------------------------
-              const videoThreshold = 0.5;
-              let debugLogs = [];
-              const bitrate = file.size / videoDuration;
-              let segments = [];
-              const segmentLength = 40; // 40초 단위
-              // fileBuffer 미리 읽기
+              // ---------------------------
+              // 1분 이상 or duration=0 => async
+              // ---------------------------
+              console.log("1분 이상 => SightEngine 비동기 API 사용");
+              // 1) upload.json -> media_id
               const fileBuffer = await file.arrayBuffer();
+              const asyncForm = new FormData();
+              asyncForm.append('media', new Blob([fileBuffer], { type: file.type }), 'upload');
+              asyncForm.append('api_user', env.SIGHTENGINE_API_USER);
+              asyncForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
 
-              for (let currentStart = 0; currentStart < videoDuration; currentStart += segmentLength) {
-                segments.push({
-                  start: currentStart,
-                  length: Math.min(segmentLength, videoDuration - currentStart)
-                });
+              const uploadResp = await fetch('https://api.sightengine.com/1.0/upload.json', {
+                method: 'POST',
+                body: asyncForm
+              });
+              const uploadResult = await uploadResp.json();
+              console.log("upload.json result:", uploadResult);
+
+              if (uploadResult.status === "failure") {
+                return new Response(JSON.stringify({ success: false, error: "비디오 upload 실패: " + uploadResult.error }), { status: 400 });
+              }
+              if (!uploadResult.media) {
+                return new Response(JSON.stringify({ success: false, error: "upload 후 media 정보 없음" }), { status: 400 });
+              }
+              const mediaId = uploadResult.media.id;
+              console.log("media_id=", mediaId);
+
+              // 2) video/moderation.json
+              const modForm = new FormData();
+              modForm.append('media_id', mediaId);
+              modForm.append('models', 'nudity,wad,offensive');
+              modForm.append('api_user', env.SIGHTENGINE_API_USER);
+              modForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
+
+              const modResp = await fetch('https://api.sightengine.com/1.0/video/moderation.json', {
+                method: 'POST',
+                body: modForm
+              });
+              const modResult = await modResp.json();
+              console.log("moderation.json =>", modResult);
+
+              if (modResult.status === "failure") {
+                return new Response(JSON.stringify({ success: false, error: "moderation 실패: " + modResult.error }), { status: 400 });
               }
 
-              // 실제로 분할 검열이 시도되는지 확인용
-              let didSegmentCensor = false;
+              // 3) status.json 폴링
+              let maxAttempts = 6; // 5초씩 6번 = 30초
+              let finalAnalysis = null;
+              while (maxAttempts > 0) {
+                await new Promise(r => setTimeout(r, 5000)); // 5초 대기
+                const statusUrl = `https://api.sightengine.com/1.0/video/status.json?media_id=${mediaId}&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`;
+                const statusResp = await fetch(statusUrl);
+                const statusResult = await statusResp.json();
+                console.log("status poll =>", statusResult);
 
-              for (let i = 0; i < segments.length; i++) {
-                const seg = segments[i];
-                const startByte = Math.floor(seg.start * bitrate);
-                const endByte = Math.floor((seg.start + seg.length) * bitrate);
-                debugLogs.push(`Segment ${i+1}/${segments.length}: seconds [${seg.start} ~ ${seg.start + seg.length}], bytes [${startByte} ~ ${endByte}]`);
-
-                // endByte 보정
-                const realEndByte = Math.min(endByte, fileBuffer.byteLength);
-                if (startByte >= fileBuffer.byteLength) {
-                  debugLogs.push(`Segment ${i+1} skip: startByte >= file.size`);
-                  continue;
+                if (statusResult.status === "finished") {
+                  finalAnalysis = statusResult;
+                  break;
                 }
-                if (realEndByte <= startByte) {
-                  debugLogs.push(`Segment ${i+1} skip: realEndByte <= startByte`);
-                  continue;
+                if (statusResult.status === "failure") {
+                  return new Response(JSON.stringify({ success: false, error: "status check 실패: " + statusResult.error }), { status: 400 });
                 }
+                maxAttempts--;
+              }
+              if (!finalAnalysis) {
+                return new Response(JSON.stringify({ success: false, error: "비동기 분석이 30초 내에 끝나지 않았습니다." }), { status: 408 });
+              }
 
-                const segmentArr = fileBuffer.slice(startByte, realEndByte);
-                if (segmentArr.byteLength === 0) {
-                  debugLogs.push(`Segment ${i+1} skip: zero bytes`);
-                  continue;
-                }
-
-                // "검열 시도"했다고 표시
-                didSegmentCensor = true;
-                fileCensoredOk = true; // 최소 한 번은 검열을 시도한다
-
-                const segmentBlob = new Blob([segmentArr], { type: file.type });
-                const segmentForm = new FormData();
-                segmentForm.append('media', segmentBlob, 'upload');
-                segmentForm.append('models', 'nudity,wad,offensive');
-                segmentForm.append('api_user', env.SIGHTENGINE_API_USER);
-                segmentForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
-
-                const segmentResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
-                  method: 'POST',
-                  body: segmentForm
-                });
-                const segmentResult = await segmentResponse.json();
-                debugLogs.push(`Segment ${i+1} response: ${JSON.stringify(segmentResult)}`);
-
-                if (segmentResult.status === "failure") {
-                  // 굳이 여기서 중단하지 않고 다음 세그먼트
-                  debugLogs.push(`Segment ${i+1} => failure: ${segmentResult.error}`);
-                  continue;
-                }
-
-                let frames = [];
-                if (segmentResult.data && segmentResult.data.frames) {
-                  frames = Array.isArray(segmentResult.data.frames) ? segmentResult.data.frames : [segmentResult.data.frames];
-                } else if (segmentResult.frames) {
-                  frames = Array.isArray(segmentResult.frames) ? segmentResult.frames : [segmentResult.frames];
-                }
-
-                let reasons = [];
-                // 프레임 분석
-                if (frames.length > 0) {
-                  for (const frame of frames) {
-                    if (frame.nudity) {
-                      for (const key in frame.nudity) {
-                        if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                        if (Number(frame.nudity[key]) >= videoThreshold) {
-                          reasons.push("선정적 콘텐츠");
-                          break;
-                        }
-                      }
-                    }
-                    if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= videoThreshold) {
-                      reasons.push("욕설/모욕적 콘텐츠");
-                    }
-                    if (frame.wad) {
-                      for (const key in frame.wad) {
-                        if (Number(frame.wad[key]) >= videoThreshold) {
-                          reasons.push("잔인하거나 위험한 콘텐츠");
-                          break;
-                        }
-                      }
-                    }
-                    if (reasons.length > 0) break;
-                  }
-                } else {
-                  // frame이 없으면 data 최상위
-                  if (segmentResult.data && segmentResult.data.nudity) {
-                    for (const key in segmentResult.data.nudity) {
-                      if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                      if (Number(segmentResult.data.nudity[key]) >= videoThreshold) {
-                        reasons.push("선정적 콘텐츠");
-                        break;
-                      }
-                    }
-                  }
-                  if (segmentResult.data && segmentResult.data.offensive && segmentResult.data.offensive.prob !== undefined && Number(segmentResult.data.offensive.prob) >= videoThreshold) {
-                    reasons.push("욕설/모욕적 콘텐츠");
-                  }
-                  if (segmentResult.data && segmentResult.data.wad) {
-                    for (const key in segmentResult.data.wad) {
-                      if (Number(segmentResult.data.wad[key]) >= videoThreshold) {
-                        reasons.push("잔인하거나 위험한 콘텐츠");
-                        break;
-                      }
-                    }
-                  }
-                }
-                if (reasons.length > 0) {
-                  reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
-                  return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
-                }
-              } // end for segments
-
-              // 만약 분할 검열을 하나도 안 했으면(= 전부 skip)
-              if (!didSegmentCensor) {
-                // "검열 시도 자체가 없으니 업로드 불가"
-                return new Response(JSON.stringify({ success: false, error: "검열 실패: 1분 이상 영상인데 세그먼트가 전부 무효" }), { status: 400 });
+              // 최종 결과 판정
+              const videoThreshold = 0.5;
+              let frames = [];
+              if (finalAnalysis.data && finalAnalysis.data.frames) {
+                frames = Array.isArray(finalAnalysis.data.frames) ? finalAnalysis.data.frames : [finalAnalysis.data.frames];
+              } else if (finalAnalysis.frames) {
+                frames = Array.isArray(finalAnalysis.frames) ? finalAnalysis.frames : [finalAnalysis.frames];
+              }
+              const found = checkFramesForCensorship(frames, finalAnalysis.data, videoThreshold);
+              if (found.length > 0) {
+                console.log("1분 이상 비동기 동영상 불량:", found);
+                return new Response(JSON.stringify({ success: false, error: "검열됨: " + found.join(", ") }), { status: 400 });
               }
             }
-
-          } // end if video
-
-          // 모든 검열 로직이 끝났는데도 fileCensoredOk === false 라면,
-          // "검열 자체가 전혀 실행되지 않았다"는 뜻이므로 에러
-          if (!fileCensoredOk) {
-            return new Response(JSON.stringify({ success: false, error: "검열되지 않은 파일이 존재합니다." }), { status: 400 });
           }
-        } // end for files
+        }
 
-        // 모든 파일이 검열 통과 -> R2에 업로드
+        // ---------------------------
+        // 검열 통과 -> R2 업로드
+        // ---------------------------
         let codes = [];
         for (const file of files) {
           const generateRandomCode = (length = 8) => {
@@ -440,16 +333,23 @@ export default {
         }
         const urlCodes = codes.join(",");
         const imageUrl = `https://${url.host}/${urlCodes}`;
+        console.log("업로드 완료 =>", imageUrl);
         return new Response(JSON.stringify({ success: true, url: imageUrl }), {
           headers: { 'Content-Type': 'application/json' }
         });
+
       } catch (err) {
+        console.log("에러 발생:", err);
         return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
       }
     }
-    // GET /{코드} : R2에서 파일 반환 or HTML 페이지 (다중 코드 지원)
+
+    // ---------------------------
+    // GET /{코드}: R2 파일 or HTML 페이지
+    // ---------------------------
     else if (request.method === 'GET' && /^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname)) {
       if (url.searchParams.get('raw') === '1') {
+        // 원본 파일 바로 반환
         const code = url.pathname.slice(1).split(",")[0];
         const object = await env.IMAGES.get(code);
         if (!object) {
@@ -459,6 +359,8 @@ export default {
         headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
         return new Response(object.body, { headers });
       }
+
+      // HTML 페이지 표시
       const codes = url.pathname.slice(1).split(",");
       const objects = await Promise.all(codes.map(async code => {
         const object = await env.IMAGES.get(code);
@@ -472,6 +374,8 @@ export default {
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
         }
       }
+
+      // --- 아래부터는 HTML/CSS/JS 전혀 생략 없이 전체 코드 ---
       const htmlContent = `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -707,10 +611,12 @@ export default {
   </script>
 </body>
 </html>`;
-      return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+      return new Response(htmlContent, {
+        headers: { "Content-Type": "text/html; charset=UTF-8" },
+      });
     }
 
-    // 그 외의 경우 -> 기본 에셋 핸들러
+    // 그 외 -> 기본 에셋
     return env.ASSETS.fetch(request);
   }
 };
