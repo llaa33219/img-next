@@ -8,7 +8,6 @@ export default {
     const url = new URL(request.url);
 
     // (디버그 용) 요청 로그
-    // 실제 운영에서 노출 최소화하려면 주석 처리하거나 console.log 제거
     console.log("Incoming Request:", {
       method: request.method,
       url: request.url,
@@ -98,10 +97,10 @@ export default {
       let mediaTags = "";
       for (const { code, object } of objects) {
         if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
-          // 동영상 => 커스텀 플레이어 용 data-blouplayer 속성 추가
-          mediaTags += `<video data-blouplayer src="https://${url.host}/${code}?raw=1" class="wrapped landscape"></video>\n`;
+          // 동영상 (클릭 확대/축소 제거: onclick 제거)
+          mediaTags += `<video src="https://${url.host}/${code}?raw=1" class="wrapped landscape"></video>\n`;
         } else {
-          // 이미지 => 기존 클릭 확대/축소 유지
+          // 이미지 (기존대로 클릭 확대/축소 가능)
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
         }
       }
@@ -222,7 +221,6 @@ async function handleImageCensorship(file, env) {
     // --- (3) 결과판단 ---
     if (data.status === 'failure') {
       // (추가) usage_limit 에러 감지
-      // e.g. { "status":"failure", "error":{ "type":"usage_limit","code":37,... } }
       if (data.error && data.error.type === 'usage_limit' && data.error.code === 37) {
         return {
           ok: false,
@@ -330,7 +328,7 @@ async function handleVideoCensorship(file, env) {
         };
       }
 
-      // (추가) usage_limit 에러 처리
+      // usage_limit 에러 처리
       if (data.status === 'failure') {
         if (data.error && data.error.type === 'usage_limit' && data.error.code === 37) {
           return {
@@ -410,7 +408,7 @@ async function handleVideoCensorship(file, env) {
         };
       }
 
-      // (추가) usage_limit 에러 처리
+      // usage_limit 에러 처리
       if (initData.status === 'failure') {
         if (initData.error && initData.error.type === 'usage_limit' && initData.error.code === 37) {
           return {
@@ -473,7 +471,7 @@ async function handleVideoCensorship(file, env) {
           };
         }
 
-        // (추가) usage_limit 에러 처리
+        // usage_limit 에러 처리
         if (statusData.status === 'failure') {
           if (statusData.error && statusData.error.type === 'usage_limit' && statusData.error.code === 37) {
             return {
@@ -729,10 +727,7 @@ function renderHTML(mediaTags, host) {
       align-items: center;
     }
     
-    /* ========================================
-       이미지 (확대/축소)와 비디오(커스텀 플레이어) 분리
-       ======================================== */
-    /* 이미지 기본 스타일 */
+    /* 이미지에는 클릭 확대/축소 유지, 비디오는 제거 */
     #imageContainer img {
       width: 40vw;
       height: auto;
@@ -740,38 +735,11 @@ function renderHTML(mediaTags, host) {
       max-height: 50vh;
       display: block;
       margin: 20px auto;
-      cursor: zoom-in;
+      cursor: zoom-in; /* 이미지에만 zoom-in */
       transition: all 0.3s ease;
       object-fit: contain;
     }
-    #imageContainer img.landscape {
-      width: 40vw;
-      height: auto;
-      max-width: 40vw;
-      cursor: zoom-in;
-    }
-    #imageContainer img.portrait {
-      width: auto;
-      height: 50vh;
-      max-width: 40vw;
-      cursor: zoom-in;
-    }
-    #imageContainer img.expanded.landscape {
-      width: 80vw;
-      height: auto;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
-    }
-    #imageContainer img.expanded.portrait {
-      width: auto;
-      height: 100vh;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
-    }
 
-    /* 동영상(커스텀 플레이어). 비디오 자체 컨트롤 제거, BLOUplayer가 제어 */
     #imageContainer video {
       width: 40vw;
       height: auto;
@@ -779,10 +747,39 @@ function renderHTML(mediaTags, host) {
       max-height: 50vh;
       display: block;
       margin: 20px auto;
+      /* cursor: default; (기본값) */
       transition: all 0.3s ease;
       object-fit: contain;
     }
+  
+    /* 이미지(landscape/portrait) */
+    #imageContainer img.landscape {
+      cursor: zoom-in;
+    }
+    #imageContainer img.portrait {
+      cursor: zoom-in;
+    }
+    #imageContainer img.expanded.landscape {
+      width: 80vw;
+      max-width: 80vw;
+      max-height: 100vh;
+      cursor: zoom-out;
+    }
+    #imageContainer img.expanded.portrait {
+      height: 100vh;
+      max-width: 80vw;
+      max-height: 100vh;
+      cursor: zoom-out;
+    }
 
+    /* 비디오(landscape/portrait)는 클릭 확대/축소 제거 */
+    #imageContainer video.landscape,
+    #imageContainer video.portrait,
+    #imageContainer video.expanded.landscape,
+    #imageContainer video.expanded.portrait {
+      cursor: default;
+    }
+  
     .container {
       text-align: center;
     }
@@ -846,7 +843,6 @@ function renderHTML(mediaTags, host) {
       }
     }
   </style>
-  <!-- 커스텀 플레이어 관련 CSS/JS -->
   <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
   <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
 </head>
@@ -862,24 +858,21 @@ function renderHTML(mediaTags, host) {
   <script>
     // 이미지만 확대/축소
     function toggleZoom(elem) {
-      // 비디오는 확대/축소 무시
-      if (elem.tagName.toLowerCase() !== 'img') return;
-
+      // 비디오는 onclick을 아예 제거했으므로 이 함수는 이미지에만 적용
       if (!elem.classList.contains('landscape') && !elem.classList.contains('portrait')) {
         let width=0, height=0;
-        width = elem.naturalWidth;
-        height = elem.naturalHeight;
+        if (elem.tagName.toLowerCase()==='img') {
+          width=elem.naturalWidth; 
+          height=elem.naturalHeight;
+        }
+        // (비디오 부분은 처리하지 않음)
         if(width && height){
-          if(width >= height) elem.classList.add('landscape');
+          if(width>=height) elem.classList.add('landscape');
           else elem.classList.add('portrait');
         }
       }
       elem.classList.toggle('expanded');
     }
-
-    document.getElementById('toggleButton')?.addEventListener('click', function(){
-      window.location.href='/';
-    });
   </script>
 </body>
 </html>`;
