@@ -126,9 +126,7 @@ export default {
             }
 
             if (videoDuration < 60) {
-              // ---------------------------------------------------
-              // 1분 미만: 기존 방식 그대로 처리 (이 부분은 그대로)
-              // ---------------------------------------------------
+              // 1분 미만: 기존 방식 그대로 처리 (이 부분은 수정 X)
               const videoThreshold = 0.5;
               const sightForm = new FormData();
               sightForm.append('media', file, 'upload');
@@ -199,17 +197,23 @@ export default {
                 return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
             } else {
-              // ------------------------------------------------------------------
               // 1분 이상: 영상의 비트레이트를 계산하여 40초 단위로 구간별 검열 요청
-              // ------------------------------------------------------------------
+              // → 각 청크에 moov(box) 부분을 앞에 추가하여 Sightengine이 제대로 인식하도록 함
               const videoThreshold = 0.5;
               let reasons = []; // 실제 에러 메시지를 담을 배열
               let debugLogs = []; // 디버그 로그를 담을 배열 (나중에 reasons에 추가)
               const bitrate = file.size / videoDuration;
               let segments = [];
               const segmentLength = 40; // 40초 단위 슬라이싱
+
+              // moov 박스 포함 용량(대략 2MB)
+              const moovBoxSize = 2 * 1024 * 1024;
+
               for (let currentStart = 0; currentStart < videoDuration; currentStart += segmentLength) {
-                segments.push({ start: currentStart, length: Math.min(segmentLength, videoDuration - currentStart) });
+                segments.push({
+                  start: currentStart,
+                  length: Math.min(segmentLength, videoDuration - currentStart)
+                });
               }
 
               for (let i = 0; i < segments.length; i++) {
@@ -218,7 +222,7 @@ export default {
                 const endByte = Math.floor((seg.start + seg.length) * bitrate);
                 debugLogs.push(`Segment ${i+1}/${segments.length}: seconds [${seg.start} ~ ${seg.start + seg.length}], bytes [${startByte} ~ ${endByte}]`);
 
-                // 추가된 안전 로직: 실제 endByte가 파일 크기를 넘지 않도록 조정
+                // 실제 endByte가 파일 크기를 넘지 않도록 조정
                 const realEndByte = Math.min(endByte, file.size);
                 if (startByte >= file.size) {
                   debugLogs.push(`Segment ${i+1} startByte >= file.size, skipping`);
@@ -229,7 +233,16 @@ export default {
                   break;
                 }
 
-                const segmentBlob = file.slice(startByte, realEndByte, file.type);
+                // (중요) Sightengine이 청크를 독립 MP4로 인식하려면 moov 박스가 필요
+                // → 파일의 첫 부분(2MB 정도)을 잘라서 앞에 붙임
+                const moovEnd = Math.min(moovBoxSize, file.size);
+                const moovBlob = file.slice(0, moovEnd, file.type);
+
+                // 실제 영상 데이터 청크
+                const contentBlob = file.slice(startByte, realEndByte, file.type);
+
+                // 두 블롭을 합쳐서 하나의 독립된 MP4로 만듦
+                const segmentBlob = new Blob([moovBlob, contentBlob], { type: file.type });
                 if (segmentBlob.size === 0) {
                   debugLogs.push(`Segment ${i+1} is zero bytes. Skipping censorship check for this segment.`);
                   continue;
@@ -346,8 +359,10 @@ export default {
         return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
       }
     }
+
     // GET /{코드} : R2에서 파일 반환 또는 HTML 래퍼 페이지 제공 (다중 코드 지원)
     else if (request.method === 'GET' && /^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname)) {
+      // raw 파라미터가 있으면 원본 파일 바로 출력
       if (url.searchParams.get('raw') === '1') {
         const code = url.pathname.slice(1).split(",")[0];
         const object = await env.IMAGES.get(code);
@@ -358,6 +373,7 @@ export default {
         headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
         return new Response(object.body, { headers });
       }
+      // 아니면 HTML 페이지로 보여주기
       const codes = url.pathname.slice(1).split(",");
       const objects = await Promise.all(codes.map(async code => {
         const object = await env.IMAGES.get(code);
@@ -600,7 +616,7 @@ export default {
       }
       elem.classList.toggle('expanded');
     }
-    document.getElementById('toggleButton').addEventListener('click', function(){
+    document.getElementById('toggleButton')?.addEventListener('click', function(){
       window.location.href = '/';
     });
   </script>
@@ -609,6 +625,7 @@ export default {
       return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
     }
   
+    // 그 외의 경우 -> 기본 에셋 핸들러
     return env.ASSETS.fetch(request);
   }
 };
