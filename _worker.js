@@ -209,9 +209,11 @@ export default {
                 const bitrate = file.size / videoDuration; // 기존 비트레이트 계산 유지 (참고용)
                 const endByte = Math.floor(segmentLength * bitrate); // 비트레이트 * 시간으로 바이트 계산 (참고용)
                 const endByteFileSizeRatio = Math.floor(file.size * (segmentLength / videoDuration)); // 파일 크기 비율로 endByte 계산 (단순화)
-                const finalEndByte = endByteFileSizeRatio > 0 ? endByteFileSizeRatio : 1024 * 1024; // 최소 1MB는 잡도록
+                // segment blob 최소 크기 3MB 보장
+                const MIN_SEGMENT_SIZE = 3 * 1024 * 1024;
+                const finalEndByte = Math.max(endByteFileSizeRatio > 0 ? endByteFileSizeRatio : 1024 * 1024, MIN_SEGMENT_SIZE);
 
-                debugLogs.push(`Segment 1/1: seconds [0 ~ ${segmentLength}], bytes [0 ~ ${finalEndByte}] (FileSizeRatio 방식)`);
+                debugLogs.push(`Segment 1/1: seconds [0 ~ ${segmentLength}], bytes [0 ~ ${finalEndByte}] (FileSizeRatio 방식, 최소 ${MIN_SEGMENT_SIZE} bytes 보장)`);
                 debugLogs.push(`Segment 1/1: seconds [0 ~ ${segmentLength}], bytes [0 ~ ${endByte}] (Bitrate 방식 - 참고용)`);
 
 
@@ -252,14 +254,14 @@ export default {
                 try {
                   const segmentResult = await segmentResponse.json();
                   debugLogs.push(`Segment 1/1 response: ${JSON.stringify(segmentResult)}`);
-
+                
                   let frames = [];
                   if (segmentResult.data && segmentResult.data.frames) {
                     frames = Array.isArray(segmentResult.data.frames) ? segmentResult.data.frames : [segmentResult.data.frames];
                   } else if (segmentResult.frames) {
                     frames = Array.isArray(segmentResult.frames) ? segmentResult.frames : [segmentResult.frames];
                   }
-
+                
                   if (frames.length > 0) {
                     for (const frame of frames) {
                       if (frame.nudity) {
@@ -305,17 +307,13 @@ export default {
                       }
                     }
                   }
-
                   if (reasons.length > 0) {
                     // 에러 발생 시, 디버그 로그도 같이 전달
                     reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
                     return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                   }
                 } catch (e) {
-                  debugLogs.push(`Segment 1/1 JSON parse error: ${e.message}`);
-                  reasons.push(`API 응답 JSON 파싱 에러 발생: ${e.message}`);
-                  reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
-                  return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
+                  return new Response(JSON.stringify({ success: false, error: "영상 검열 처리 중 오류 발생: " + e.message }), { status: 400 });
                 }
               }
             }
