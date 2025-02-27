@@ -130,7 +130,7 @@ async function handleUpload(request, env) {
 
   // 업로드 가능 파일 형식 제한: 검열 가능한 이미지 형식과 검열 가능한 영상 형식으로 제한
   const allowedImageTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-  const allowedVideoTypes = ["video/mp4", "video/webm", "video/ogg", "video/x-msvideo", "video/quicktime"];
+  const allowedVideoTypes = ["video/mp4", "video/webm", "video/ogg", "video/x-msvideo"];
   for (const file of files) {
     if (file.type.startsWith('image/')) {
       if (!allowedImageTypes.includes(file.type)) {
