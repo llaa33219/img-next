@@ -27,18 +27,16 @@ export default {
         const buffer = await file.arrayBuffer();
         const dv = new DataView(buffer);
         const uint8 = new Uint8Array(buffer);
-        // mvhd 문자열의 아스키 코드: m=109, v=118, h=104, d=100
         for (let i = 0; i < uint8.length - 4; i++) {
+          // 'm','v','h','d' = 109,118,104,100
           if (uint8[i] === 109 && uint8[i + 1] === 118 && uint8[i + 2] === 104 && uint8[i + 3] === 100) {
-            const boxStart = i - 4; // mvhd 박스: size(4)+type(4)
+            const boxStart = i - 4;
             const version = dv.getUint8(boxStart + 8);
             if (version === 0) {
-              // version 0: header = 4+4+1+3+4+4+4+4
               const timescale = dv.getUint32(boxStart + 20);
               const duration = dv.getUint32(boxStart + 24);
               return duration / timescale;
             } else if (version === 1) {
-              // version 1: header = 4+4+1+3+8+8+4+8
               const timescale = dv.getUint32(boxStart + 28);
               const high = dv.getUint32(boxStart + 32);
               const low = dv.getUint32(boxStart + 36);
@@ -53,7 +51,7 @@ export default {
       }
     }
 
-    // 박스를 찾는 유틸 함수 ([size, type, ...] 구조를 파싱)
+    // 박스를 찾는 유틸 함수
     function findBox(dv, offset, boxName) {
       while (offset < dv.byteLength) {
         const size = dv.getUint32(offset);
@@ -74,23 +72,21 @@ export default {
       return null;
     }
 
-    // MP4에서 ftyp, moov 두 개 박스를 추출
+    // MP4에서 ftyp, moov 박스 추출
     function extractFtypMoov(buffer) {
       const dv = new DataView(buffer);
 
       const ftypBox = findBox(dv, 0, 'ftyp');
       if (!ftypBox) return null;
-
       const moovBox = findBox(dv, 0, 'moov');
       if (!moovBox) return null;
 
       const ftypArr = buffer.slice(ftypBox.start, ftypBox.start + ftypBox.size);
       const moovArr = buffer.slice(moovBox.start, moovBox.start + moovBox.size);
-
       return { ftypArr, moovArr };
     }
 
-    // 공통 함수: frames/data에서 검열 사유를 찾음
+    // 프레임(및 data)에서 검열 사유를 찾는 함수
     function checkFramesForCensorship(frames, data, threshold) {
       let reasons = [];
       if (frames.length > 0) {
@@ -118,7 +114,7 @@ export default {
           if (reasons.length > 0) break;
         }
       } else {
-        // frames가 아예 없으면 상위 data 값 체크
+        // frames가 없으면 data의 최상위 nudity/offensive/wad
         if (data && data.nudity) {
           for (const key in data.nudity) {
             if (["suggestive_classes", "context", "none"].includes(key)) continue;
@@ -143,8 +139,23 @@ export default {
       return reasons;
     }
 
-    // ============== 여기서부터 라우터 ==============
-    // POST /upload : 다중 파일 업로드 처리 (검열 -> R2 저장 -> 링크 반환)
+    // (새) "파일 크기 기반"으로 N개 구간을 만드는 함수
+    //  - duration을 전혀 알 수 없을 때 사용
+    //  - 1구간 당 5MB로, (파일크기 / 5MB) 구간 수를 생성
+    function makeSizeBasedSegments(fileSize, chunkSizeMB = 5) {
+      const chunkSize = chunkSizeMB * 1024 * 1024; // 5MB
+      let segments = [];
+      let startByte = 0;
+      let i = 0;
+      while (startByte < fileSize) {
+        const endByte = Math.min(startByte + chunkSize, fileSize);
+        segments.push({ index: i++, startByte, endByte });
+        startByte = endByte;
+      }
+      return segments;
+    }
+
+    // ============== 라우터 ==============
     if (request.method === 'POST' && url.pathname === '/upload') {
       try {
         const formData = await request.formData();
@@ -153,14 +164,14 @@ export default {
           return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
         }
 
-        // 1. 모든 파일에 대해 검열 통과 여부 확인
         for (const file of files) {
           if (file.type.startsWith('image/')) {
-            // (1) 이미지 검열
-            // ------------------------------
+            // =============================
+            // 이미지 검열 (원래 로직 그대로)
+            // =============================
             let fileForCensorship = file;
             try {
-              // 이미지 리사이징: 최대 600px 축소하여 검열 속도↑
+              // 이미지 리사이징
               const buffer = await file.arrayBuffer();
               const base64 = arrayBufferToBase64(buffer);
               const dataUrl = `data:${file.type};base64,${base64}`;
@@ -170,7 +181,7 @@ export default {
               const resizedResponse = await fetch(reqForResize);
               fileForCensorship = await resizedResponse.blob();
             } catch (e) {
-              // 리사이징 실패 시 원본 사용
+              // 실패 시 원본 사용
               fileForCensorship = file;
             }
 
@@ -204,22 +215,21 @@ export default {
             }
 
           } else if (file.type.startsWith('video/')) {
-            // (2) 동영상 검열
-            // ------------------------------
+            // =============================
+            // 동영상 검열
+            // =============================
             // 1) 용량 체크
             if (file.size > 50 * 1024 * 1024) {
               return new Response(JSON.stringify({ success: false, error: "영상 용량이 50MB를 초과합니다." }), { status: 400 });
             }
 
-            // 2) MP4 길이 추출
+            // 2) duration 체크
             let videoDuration = await getMP4Duration(file);
-            if (videoDuration === null) {
-              videoDuration = 0;
-            }
+            if (videoDuration === null) videoDuration = 0;
 
-            if (videoDuration < 60) {
+            if (videoDuration < 60 && videoDuration !== 0) {
               // ---------------------------
-              // 1분 미만: 기존 로직 그대로
+              // 1분 미만 & duration>0
               // ---------------------------
               const videoThreshold = 0.5;
               const sightForm = new FormData();
@@ -234,7 +244,6 @@ export default {
               });
               const sightResult = await sightResponse.json();
 
-              let reasons = [];
               let frames = [];
               if (sightResult.data && sightResult.data.frames) {
                 frames = Array.isArray(sightResult.data.frames) ? sightResult.data.frames : [sightResult.data.frames];
@@ -242,73 +251,26 @@ export default {
                 frames = Array.isArray(sightResult.frames) ? sightResult.frames : [sightResult.frames];
               }
 
-              if (frames.length > 0) {
-                for (const frame of frames) {
-                  if (frame.nudity) {
-                    for (const key in frame.nudity) {
-                      if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                      if (Number(frame.nudity[key]) >= videoThreshold) {
-                        reasons.push("선정적 콘텐츠");
-                        break;
-                      }
-                    }
-                  }
-                  if (frame.offensive && frame.offensive.prob !== undefined && Number(frame.offensive.prob) >= videoThreshold) {
-                    reasons.push("욕설/모욕적 콘텐츠");
-                  }
-                  if (frame.wad) {
-                    for (const key in frame.wad) {
-                      if (Number(frame.wad[key]) >= videoThreshold) {
-                        reasons.push("잔인하거나 위험한 콘텐츠");
-                        break;
-                      }
-                    }
-                  }
-                }
-              } else {
-                if (sightResult.data && sightResult.data.nudity) {
-                  for (const key in sightResult.data.nudity) {
-                    if (["suggestive_classes", "context", "none"].includes(key)) continue;
-                    if (Number(sightResult.data.nudity[key]) >= videoThreshold) {
-                      reasons.push("선정적 콘텐츠");
-                      break;
-                    }
-                  }
-                }
-                if (sightResult.data && sightResult.data.offensive && sightResult.data.offensive.prob !== undefined && Number(sightResult.data.offensive.prob) >= videoThreshold) {
-                  reasons.push("욕설/모욕적 콘텐츠");
-                }
-                if (sightResult.data && sightResult.data.wad) {
-                  for (const key in sightResult.data.wad) {
-                    if (Number(sightResult.data.wad[key]) >= videoThreshold) {
-                      reasons.push("잔인하거나 위험한 콘텐츠");
-                      break;
-                    }
-                  }
-                }
-              }
-              if (reasons.length > 0) {
-                return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
+              const found = checkFramesForCensorship(frames, sightResult.data, videoThreshold);
+              if (found.length > 0) {
+                return new Response(JSON.stringify({ success: false, error: "검열됨: " + found.join(", ") }), { status: 400 });
               }
 
             } else {
-              // ----------------------------
-              // 1분 이상: 40초 단위 구간화
-              // ----------------------------
+              // -------------------------------------------------------------------
+              // 1분 이상 (>=60) 또는 duration==0(=영상길이 파싱 실패) → 여러 구간 검열
+              // -------------------------------------------------------------------
               const videoThreshold = 0.5;
+              const debugLogs = [];
               let reasons = [];
-              let debugLogs = [];
 
               // 전체 파일 arrayBuffer
               const fileBuffer = await file.arrayBuffer();
-              const dv = new DataView(fileBuffer);
-
-              // ftyp + moov 추출
               const boxes = extractFtypMoov(fileBuffer);
-              if (!boxes) {
-                // ftyp/moov 없으면 → 통째로 fallback
-                debugLogs.push("Cannot find ftyp/moov, fallback to full check.");
 
+              // ftyp/moov가 없다면 → fallback(전체파일 한번에)
+              if (!boxes) {
+                debugLogs.push("No ftyp/moov found, fallback to single check");
                 const fallbackForm = new FormData();
                 fallbackForm.append('media', new Blob([fileBuffer], { type: file.type }), 'upload');
                 fallbackForm.append('models', 'nudity,wad,offensive');
@@ -320,116 +282,126 @@ export default {
                   body: fallbackForm
                 });
                 const fallbackResult = await fallbackResp.json();
-                debugLogs.push(`Fallback result: ${JSON.stringify(fallbackResult)}`);
+                debugLogs.push("fallbackResult=" + JSON.stringify(fallbackResult));
 
-                if (fallbackResult.status === 'failure') {
-                  reasons.push(`Fallback check failed: ${fallbackResult.error}`);
-                  reasons.push(`DEBUG LOGS: ${debugLogs.join(" | ")}`);
-                  return new Response(JSON.stringify({ success: false, error: reasons.join(" | ") }), { status: 400 });
+                if (fallbackResult.status === "failure") {
+                  reasons.push(`Fallback check failure: ${fallbackResult.error}`);
+                  return new Response(JSON.stringify({ success: false, error: reasons.join(", ") }), { status: 400 });
                 }
 
-                // 프레임 분석
                 let fallbackFrames = [];
                 if (fallbackResult.data && fallbackResult.data.frames) {
                   fallbackFrames = Array.isArray(fallbackResult.data.frames) ? fallbackResult.data.frames : [fallbackResult.data.frames];
                 } else if (fallbackResult.frames) {
                   fallbackFrames = Array.isArray(fallbackResult.frames) ? fallbackResult.frames : [fallbackResult.frames];
                 }
-                let fallbackDetected = checkFramesForCensorship(fallbackFrames, fallbackResult.data, videoThreshold);
-                if (fallbackDetected.length > 0) {
-                  reasons.push("검열됨: " + fallbackDetected.join(", "));
+                const found = checkFramesForCensorship(fallbackFrames, fallbackResult.data, videoThreshold);
+                if (found.length > 0) {
+                  reasons.push("검열됨: " + found.join(", "));
                   reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
                   return new Response(JSON.stringify({ success: false, error: reasons.join(" | ") }), { status: 400 });
                 }
-                // 문제없으면 계속
+                // 문제없으면 통과
                 continue;
               }
 
-              // 비트레이트 계산
-              const bitrate = fileBuffer.byteLength / videoDuration;
-              // 40초 단위 segments
-              let segments = [];
-              const segmentLength = 40;
-              for (let startSec = 0; startSec < videoDuration; startSec += segmentLength) {
-                segments.push({
-                  start: startSec,
-                  length: Math.min(segmentLength, videoDuration - startSec)
-                });
+              // 비디오 길이가 60이상인 경우: 40초 단위로 자름
+              // 길이가 0이면: 파일 크기 기준으로 자름(5MB씩)
+              let segments;
+              let isSizeBased = false;
+
+              if (videoDuration >= 60) {
+                // 40초 단위 세그먼트
+                const segmentLengthSec = 40;
+                const bitrate = fileBuffer.byteLength / videoDuration;
+                segments = [];
+                for (let startSec = 0; startSec < videoDuration; startSec += segmentLengthSec) {
+                  const lengthSec = Math.min(segmentLengthSec, videoDuration - startSec);
+                  const startByte = Math.floor(startSec * bitrate);
+                  const endByte = Math.floor((startSec + lengthSec) * bitrate);
+                  segments.push({ startByte, endByte, secStart: startSec, secLen: lengthSec });
+                }
+              } else {
+                // duration == 0 → 5MB씩 잘라
+                isSizeBased = true;
+                segments = makeSizeBasedSegments(fileBuffer.byteLength, 5); // 5MB
               }
 
-              // 각 세그먼트별 검열
+              // 각 세그먼트 분석
               for (let i = 0; i < segments.length; i++) {
                 const seg = segments[i];
-                const startByte = Math.floor(seg.start * bitrate);
-                const endByte = Math.floor((seg.start + seg.length) * bitrate);
+                const startByte = seg.startByte ?? seg.start;
+                const endByte = seg.endByte ?? seg.end;
 
-                debugLogs.push(`Segment ${i+1}/${segments.length}: [${seg.start}~${seg.start+seg.length}s], bytes [${startByte}~${endByte}]`);
-                const realEndByte = Math.min(endByte, fileBuffer.byteLength);
+                debugLogs.push(
+                  `Segment ${i+1}/${segments.length} bytes [${startByte}~${endByte}]` + 
+                  (seg.secStart !== undefined ? ` sec=[${seg.secStart}~${seg.secStart+seg.secLen}]` : '') +
+                  (isSizeBased ? ' [sizeBased]' : '')
+                );
 
-                // == break -> continue 로 수정 (한 구간 문제 생겨도 다음 구간 계속)
                 if (startByte >= fileBuffer.byteLength) {
-                  debugLogs.push(`Segment ${i+1} startByte >= file.size, skip`);
+                  debugLogs.push(`startByte>=fileLength => skip`);
                   continue;
                 }
-                if (realEndByte <= startByte) {
-                  debugLogs.push(`Segment ${i+1} realEndByte <= startByte, skip`);
-                  continue;
-                }
-
-                // 구간 데이터
-                const contentArr = fileBuffer.slice(startByte, realEndByte);
-                if (contentArr.byteLength === 0) {
-                  debugLogs.push(`Segment ${i+1} is zero bytes. skip`);
+                const realEnd = Math.min(endByte, fileBuffer.byteLength);
+                if (realEnd <= startByte) {
+                  debugLogs.push(`realEnd<=startByte => skip`);
                   continue;
                 }
 
-                // ftyp + moov + 구간을 합쳐 독립된 MP4처럼 만듦
-                const segmentBlob = new Blob([boxes.ftypArr, boxes.moovArr, contentArr], { type: file.type });
+                const chunkArr = fileBuffer.slice(startByte, realEnd);
+                if (chunkArr.byteLength === 0) {
+                  debugLogs.push(`chunkArr=0byte => skip`);
+                  continue;
+                }
+
+                // ftyp+moov+chunk
+                const segmentBlob = new Blob([boxes.ftypArr, boxes.moovArr, chunkArr], { type: file.type });
                 if (segmentBlob.size === 0) {
-                  debugLogs.push(`Segment ${i+1} blob is zero size. skip`);
+                  debugLogs.push(`segmentBlob=0byte => skip`);
                   continue;
                 }
 
-                // SightEngine API로 전송
-                const segmentForm = new FormData();
-                segmentForm.append('media', segmentBlob, 'upload');
-                segmentForm.append('models', 'nudity,wad,offensive');
-                segmentForm.append('api_user', env.SIGHTENGINE_API_USER);
-                segmentForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
+                // Sightengine 검열 요청
+                const segForm = new FormData();
+                segForm.append('media', segmentBlob, 'upload');
+                segForm.append('models', 'nudity,wad,offensive');
+                segForm.append('api_user', env.SIGHTENGINE_API_USER);
+                segForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
 
-                const segmentResp = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
+                const segResp = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                   method: 'POST',
-                  body: segmentForm
+                  body: segForm
                 });
-                const segmentResult = await segmentResp.json();
-                debugLogs.push(`Segment ${i+1} result: ${JSON.stringify(segmentResult)}`);
+                const segResult = await segResp.json();
+                debugLogs.push(`Segment ${i+1} => ${JSON.stringify(segResult)}`);
 
-                if (segmentResult.status === "failure") {
-                  // SightEngine API가 chunk를 처리 못했을 경우
-                  debugLogs.push(`Segment ${i+1} check failed: ${segmentResult.error}`);
-                  // 굳이 여기서 중단하지 않고 계속해볼 수도 있음. 
+                if (segResult.status === "failure") {
+                  // 깨진 MP4로 인식됐거나, API 에러
+                  debugLogs.push(`Segment ${i+1} => API failure: ${segResult.error}`);
+                  // 이번 구간만 스킵 후 계속
                   continue;
                 }
 
-                // 프레임 분석
                 let frames = [];
-                if (segmentResult.data && segmentResult.data.frames) {
-                  frames = Array.isArray(segmentResult.data.frames) ? segmentResult.data.frames : [segmentResult.data.frames];
-                } else if (segmentResult.frames) {
-                  frames = Array.isArray(segmentResult.frames) ? segmentResult.frames : [segmentResult.frames];
+                if (segResult.data && segResult.data.frames) {
+                  frames = Array.isArray(segResult.data.frames) ? segResult.data.frames : [segResult.data.frames];
+                } else if (segResult.frames) {
+                  frames = Array.isArray(segResult.frames) ? segResult.frames : [segResult.frames];
                 }
-                let found = checkFramesForCensorship(frames, segmentResult.data, videoThreshold);
+                const found = checkFramesForCensorship(frames, segResult.data, videoThreshold);
                 if (found.length > 0) {
                   reasons.push("검열됨: " + found.join(", "));
                   reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
                   return new Response(JSON.stringify({ success: false, error: reasons.join(" | ") }), { status: 400 });
                 }
               }
+              // 모든 세그먼트 처리 끝
             }
           }
         }
 
-        // 2. 검열 통과 시, R2에 업로드
+        // 2. 검열을 통과했으므로 R2에 저장
         let codes = [];
         for (const file of files) {
           const generateRandomCode = (length = 8) => {
@@ -441,7 +413,6 @@ export default {
             return result;
           };
           let code;
-          // 중복되지 않는 코드 5번 시도
           for (let i = 0; i < 5; i++) {
             code = generateRandomCode(8);
             const existing = await env.IMAGES.get(code);
@@ -456,8 +427,6 @@ export default {
           });
           codes.push(code);
         }
-
-        // 업로드 성공 → url 반환
         const urlCodes = codes.join(",");
         const imageUrl = `https://${url.host}/${urlCodes}`;
         return new Response(JSON.stringify({ success: true, url: imageUrl }), {
@@ -469,10 +438,10 @@ export default {
       }
     }
 
-    // GET /{코드} : R2에서 파일을 찾아 반환 or HTML로 보여주기 (다중코드 지원)
+    // GET /{코드} : R2에서 파일 반환 또는 HTML로 보여주기 (다중 코드 지원)
     else if (request.method === 'GET' && /^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname)) {
       if (url.searchParams.get('raw') === '1') {
-        // raw=1 이면 원본 바이너리 직접 반환
+        // raw=1 => 바이너리 직접 반환
         const code = url.pathname.slice(1).split(",")[0];
         const object = await env.IMAGES.get(code);
         if (!object) {
@@ -482,7 +451,7 @@ export default {
         headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
         return new Response(object.body, { headers });
       }
-      // 아니면 HTML 페이지
+      // 아니면 HTML
       const codes = url.pathname.slice(1).split(",");
       const objects = await Promise.all(codes.map(async code => {
         const object = await env.IMAGES.get(code);
@@ -514,13 +483,13 @@ export default {
       padding: 20px;
       overflow: auto;
     }
-  
+
     .upload-container {
       display: flex;
       flex-direction: column;
       align-items: center;
     }
-  
+
     button {
       background-color: #007BFF;
       color: white;
@@ -537,24 +506,24 @@ export default {
       font-size: 18px;
       text-align: center;
     }
-  
+
     button:hover {
       background-color: #005BDD;
       transform: translateY(2px);
       box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
     }
-  
+
     button:active {
       background-color: #0026a3;
       box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
     }
-  
+
     #fileNameDisplay {
       font-size: 16px;
       margin-top: 10px;
       color: #333;
     }
-  
+
     #linkBox {
       width: 500px;
       height: 40px;
@@ -564,7 +533,7 @@ export default {
       text-align: center;
       border-radius: 14px;
     }
-  
+
     .copy-button {
       background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center;
       background-size: contain;
@@ -575,13 +544,13 @@ export default {
       margin-left: 10px;
       vertical-align: middle;
     }
-  
+
     .link-container {
       display: flex;
       justify-content: center;
       align-items: center;
     }
-    
+
     #imageContainer img,
     #imageContainer video {
       width: 40vw;
@@ -594,14 +563,14 @@ export default {
       object-fit: contain;
       cursor: zoom-in;
     }
-  
+
     #imageContainer img.landscape,
     #imageContainer video.landscape {
       width: 40vw;
       max-width: 40vw;
       cursor: zoom-in;
     }
-  
+
     #imageContainer img.portrait,
     #imageContainer video.portrait {
       width: auto;
@@ -609,7 +578,7 @@ export default {
       max-width: 40vw;
       cursor: zoom-in;
     }
-  
+
     #imageContainer img.expanded.landscape,
     #imageContainer video.expanded.landscape {
       width: 80vw;
@@ -617,7 +586,7 @@ export default {
       max-height: 100vh;
       cursor: zoom-out;
     }
-  
+
     #imageContainer img.expanded.portrait,
     #imageContainer video.expanded.portrait {
       width: auto;
@@ -626,11 +595,11 @@ export default {
       max-height: 100vh;
       cursor: zoom-out;
     }
-  
+
     .container {
       text-align: center;
     }
-  
+
     .header-content {
       display: flex;
       align-items: center;
@@ -639,12 +608,12 @@ export default {
       font-size: 30px;
       text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
     }
-  
+
     .header-content img {
       margin-right: 20px;
       border-radius: 14px;
     }
-  
+
     .toggle-button {
       background-color: #28a745;
       color: white;
@@ -659,19 +628,19 @@ export default {
       font-size: 24px;
       margin-left: 20px;
     }
-  
+
     .hidden {
       display: none;
     }
-  
+
     .title-img-desktop {
       display: block;
     }
-  
+
     .title-img-mobile {
       display: none;
     }
-  
+
     @media (max-width: 768px) {
       button {
         width: 300px;
@@ -729,12 +698,10 @@ export default {
 </body>
 </html>`;
 
-      return new Response(htmlContent, {
-        headers: { "Content-Type": "text/html; charset=UTF-8" },
-      });
+      return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
     }
 
     // 그 외 -> 기본 에셋 핸들러
     return env.ASSETS.fetch(request);
-  },
+  }
 };
