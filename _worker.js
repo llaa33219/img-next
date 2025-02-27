@@ -202,32 +202,34 @@ async function handleImageCensorship(file, env) {
 // =======================
 async function handleVideoCensorship(file, env) {
   try {
-    // *** [추가] 파일 해시를 구해, 이미 검열 진행 중이면 재사용 ***
+    // *** [추가] 파일 해시를 구해, 이미 검열 중이거나 끝났으면 그대로 재사용 ***
     const fileHash = await computeFileHash(file);
     if (videoScanCache[fileHash]) {
-      // 이미 이 파일을 검열 중이거나 완료된 경우 => 기존 Promise(결과) 반환
       console.log("[VideoCensorship] 동일 파일 중복 검열 회피 => 기존 결과 재사용");
       return await videoScanCache[fileHash];
     }
 
-    // 50MB 제한
+    // -------------------------
+    // 용량 제한(50MB)
+    // -------------------------
     if (file.size>50*1024*1024) {
       const overResp = new Response(JSON.stringify({success:false,error:"영상 용량이 50MB 초과"}),{status:400});
-      // 캐시에 기록 (바로 실패 응답)
       videoScanCache[fileHash] = Promise.resolve({ ok:false, response: overResp });
       return { ok:false, response: overResp };
     }
 
-    // 동영상 길이
+    // -------------------------
+    // 영상 길이 판별
+    // -------------------------
     let videoDuration = await getMP4Duration(file);
     if (!videoDuration) videoDuration=0;
 
-    // 실제 검열 로직을 Promise로 감싸서, videoScanCache에 저장
+    // -------------------------
+    // 실제 스캔 로직 (Promise)
+    // -------------------------
     const censorshipPromise = (async () => {
       if (videoDuration<60 && videoDuration!==0) {
-        // -------------------------
         // 1분 미만 => check-sync
-        // -------------------------
         const sightForm = new FormData();
         sightForm.append('media', file, 'upload');
         sightForm.append('models','nudity,wad,offensive');
@@ -262,9 +264,7 @@ async function handleVideoCensorship(file, env) {
         return {ok:true};
       }
       else {
-        // -------------------------
-        // 1분 이상 => async=1
-        // -------------------------
+        // 1분 이상 => async=1 (비동기 업로드 + 폴링)
         const sightForm=new FormData();
         sightForm.append('media', file, 'upload');
         sightForm.append('models','nudity,wad,offensive');
@@ -297,7 +297,7 @@ async function handleVideoCensorship(file, env) {
 
         // 폴링
         let finalData=null;
-        let maxAttempts=6; // 5초씩 6번 (최대 30초 대기)
+        let maxAttempts=6; // 5초씩 6번
         while(maxAttempts>0) {
           await new Promise(r=>setTimeout(r,5000));
           const statusUrl=`https://api.sightengine.com/1.0/video/check.json?request_id=${reqId}&models=nudity,wad,offensive&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`;
@@ -339,10 +339,10 @@ async function handleVideoCensorship(file, env) {
       }
     })();
 
-    // 캐시에 Promise 저장 (동일 파일 요청 시 해당 Promise를 반환)
+    // *** 캐시에 Promise 저장 ***
     videoScanCache[fileHash] = censorshipPromise;
 
-    // 실제 검열 결과를 받아서 리턴
+    // *** 실행 후 결과 반환 ***
     const result = await censorshipPromise;
     return result;
 
@@ -651,16 +651,6 @@ function renderHTML(mediaTags, host) {
 }
 
 // =======================
-// [추가] 파일 해시 계산 함수
-// =======================
-async function computeFileHash(file) {
-  const buf = await file.arrayBuffer();
-  const digest = await crypto.subtle.digest('SHA-256', buf);
-  // 해시는 Base64 등 편한 형식으로 변환
-  return btoa(String.fromCharCode(...new Uint8Array(digest)));
-}
-
-// =======================
 // 프레임 검열 함수 (기존 그대로)
 // =======================
 function checkFramesForCensorship(frames, data, threshold = 0.5) {
@@ -683,4 +673,14 @@ function checkFramesForCensorship(frames, data, threshold = 0.5) {
     }
   }
   return found;
+}
+
+// =======================
+// [추가] 파일 해시 계산 함수
+// =======================
+async function computeFileHash(file) {
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  // 해시는 Base64 등 편한 형식으로 변환
+  return btoa(String.fromCharCode(...new Uint8Array(digest)));
 }
