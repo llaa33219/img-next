@@ -686,26 +686,26 @@ function renderHTML(mediaTags, host) {
     }
   
     button {
-      background-color: #007BFF;
-      color: white;
-      border: none;
-      border-radius: 20px;
-      padding: 10px 20px;
-      margin: 20px 0;
-      width: 600px;
-      height: 61px;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
-      cursor: pointer;
-      transition: background-color 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease;
-      font-weight: bold;
-      font-size: 18px;
-      text-align: center;
+        background-color: #007BFF;
+        /* color: white; */
+        /* border: none; */
+        /* border-radius: 20px; */
+        /* padding: 10px 20px; */
+        /* margin: 20px 0; */
+        /* width: 600px; */
+        height: 61px;
+        /* box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2); */
+        cursor: pointer;
+        transition: background-color 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease;
+        font-weight: bold;
+        font-size: 18px;
+        text-align: center;
     }
   
     button:hover {
-      background-color: #005BDD;
-      transform: translateY(2px);
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        /* background-color: #005BDD; */
+        /* transform: translateY(2px); */
+        /* box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); */
     }
   
     button:active {
@@ -866,15 +866,16 @@ function renderHTML(mediaTags, host) {
       padding: 5px;
       box-shadow: 0 2px 5px rgba(0,0,0,0.2);
       z-index: 1000;
+      border-radius: 10px;
     }
     .custom-context-menu button {
-      display: block;
-      width: 100%;
-      border: none;
-      background: none;
-      padding: 5px 10px;
-      text-align: left;
-      cursor: pointer;
+        display: block;
+        width: 100%;
+        border: none;
+        background: none;
+        /* padding: 5px 10px; */
+        text-align: left;
+        cursor: pointer;
     }
     .custom-context-menu button:hover {
       background: #eee;
