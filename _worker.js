@@ -98,10 +98,10 @@ export default {
       let mediaTags = "";
       for (const { code, object } of objects) {
         if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
-          // 동영상 => 커스텀 플레이어 인식 위해 기본 <video>만 표시
-          mediaTags += `<video src="https://${url.host}/${code}?raw=1" class="wrapped landscape"></video>\n`;
+          // 동영상 => 커스텀 플레이어가 인식할 수 있도록 <video> 태그, controls 유지
+          mediaTags += `<video src="https://${url.host}/${code}?raw=1" class="wrapped landscape" controls></video>\n`;
         } else {
-          // 이미지 => 클릭 확대/축소 가능
+          // 이미지 => 클릭시 확대/축소
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
         }
       }
@@ -205,7 +205,10 @@ async function handleImageCensorship(file, env) {
       const errText = await resp.text();
       return {
         ok: false,
-        response: new Response(JSON.stringify({ success: false, error: `이미지 검열 API 실패: ${errText}` }), { status: 400 })
+        response: new Response(JSON.stringify({
+          success: false,
+          error: `이미지 검열 API 실패: ${errText}`
+        }), { status: 400 })
       };
     }
     let data;
@@ -215,7 +218,10 @@ async function handleImageCensorship(file, env) {
       let fallback = await resp.text();
       return {
         ok: false,
-        response: new Response(JSON.stringify({ success: false, error: `이미지 검열 JSON 오류: ${fallback}` }), { status: 400 })
+        response: new Response(JSON.stringify({
+          success: false,
+          error: `이미지 검열 JSON 오류: ${fallback}`
+        }), { status: 400 })
       };
     }
 
@@ -260,10 +266,10 @@ async function handleImageCensorship(file, env) {
     if (reasons.length > 0) {
       return {
         ok: false,
-        response: new Response(
-          JSON.stringify({ success: false, error: `검열됨: ${reasons.join(", ")}` }),
-          { status: 400 }
-        )
+        response: new Response(JSON.stringify({
+          success: false,
+          error: `검열됨: ${reasons.join(", ")}`
+        }), { status: 400 })
       };
     }
     return { ok: true }; // 통과
@@ -271,7 +277,10 @@ async function handleImageCensorship(file, env) {
     console.log("handleImageCensorship error:", e);
     return {
       ok: false,
-      response: new Response(JSON.stringify({ success: false, error: e.message }), { status: 500 })
+      response: new Response(JSON.stringify({
+        success: false,
+        error: e.message
+      }), { status: 500 })
     };
   }
 }
@@ -285,7 +294,10 @@ async function handleVideoCensorship(file, env) {
     if (file.size > 50 * 1024 * 1024) {
       return {
         ok: false,
-        response: new Response(JSON.stringify({ success: false, error: "영상 용량 50MB 초과" }), { status: 400 })
+        response: new Response(JSON.stringify({
+          success: false,
+          error: "영상 용량 50MB 초과"
+        }), { status: 400 })
       };
     }
 
@@ -308,11 +320,11 @@ async function handleVideoCensorship(file, env) {
       if(!syncResp.ok) {
         const errText = await syncResp.text();
         return {
-          ok:false,
-          response:new Response(JSON.stringify({
-            success:false,
-            error:`동영상(sync) API 실패: ${errText}`
-          }), {status:400})
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: `동영상(sync) API 실패: ${errText}`
+          }), { status: 400 })
         };
       }
 
@@ -322,11 +334,11 @@ async function handleVideoCensorship(file, env) {
       } catch(e) {
         const fallback = await syncResp.text();
         return {
-          ok:false,
-          response:new Response(JSON.stringify({
-            success:false,
-            error:`동영상(sync) JSON 오류: ${fallback}`
-          }), {status:400})
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: `동영상(sync) JSON 오류: ${fallback}`
+          }), { status: 400 })
         };
       }
 
@@ -359,13 +371,13 @@ async function handleVideoCensorship(file, env) {
       }
 
       let found = checkFramesForCensorship(frames, data.data, 0.5);
-      if (found.length>0) {
+      if (found.length > 0) {
         return {
-          ok:false,
-          response:new Response(JSON.stringify({
-            success:false,
-            error:`검열됨: ${found.join(", ")}`
-          }), {status:400})
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: `검열됨: ${found.join(", ")}`
+          }), { status: 400 })
         };
       }
       return { ok: true };
@@ -388,11 +400,11 @@ async function handleVideoCensorship(file, env) {
       if(!initResp.ok) {
         const errText = await initResp.text();
         return {
-          ok:false,
-          response:new Response(JSON.stringify({
-            success:false,
-            error:`비동기 업로드 실패: ${errText}`
-          }), {status:400})
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: `비동기 업로드 실패: ${errText}`
+          }), { status: 400 })
         };
       }
 
@@ -402,11 +414,11 @@ async function handleVideoCensorship(file, env) {
       } catch(e) {
         const fallback = await initResp.text();
         return {
-          ok:false,
-          response:new Response(JSON.stringify({
-            success:false,
-            error:`비동기 업로드 JSON 오류: ${fallback}`
-          }), {status:400})
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: `비동기 업로드 JSON 오류: ${fallback}`
+          }), { status: 400 })
         };
       }
 
@@ -422,21 +434,21 @@ async function handleVideoCensorship(file, env) {
           };
         }
         return {
-          ok:false,
-          response:new Response(JSON.stringify({
-            success:false,
-            error:`비동기 업로드 실패: ${initData.error}`
-          }), {status:400})
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: `비동기 업로드 실패: ${initData.error}`
+          }), { status: 400 })
         };
       }
 
       if(!initData.request || !initData.request.id) {
         return {
-          ok:false,
-          response:new Response(JSON.stringify({
-            success:false,
-            error:`비동기 응답에 request.id 없음`
-          }), {status:400})
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: `비동기 응답에 request.id 없음`
+          }), { status: 400 })
         };
       }
       const reqId = initData.request.id;
@@ -444,18 +456,18 @@ async function handleVideoCensorship(file, env) {
       // (4)-b 폴링(5초 간격, 최대 6회=30초)
       let finalData = null;
       let maxAttempts = 6;
-      while(maxAttempts>0) {
+      while(maxAttempts > 0) {
         await new Promise(r => setTimeout(r, 5000));
         const statusUrl = `https://api.sightengine.com/1.0/video/check.json?request_id=${reqId}&models=nudity,wad,offensive&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`;
         const statusResp = await fetch(statusUrl);
         if(!statusResp.ok) {
           let errText = await statusResp.text();
           return {
-            ok:false,
-            response:new Response(JSON.stringify({
-              success:false,
-              error:`비동기 폴링 실패: ${errText}`
-            }), {status:400})
+            ok: false,
+            response: new Response(JSON.stringify({
+              success: false,
+              error: `비동기 폴링 실패: ${errText}`
+            }), { status: 400 })
           };
         }
 
@@ -465,11 +477,11 @@ async function handleVideoCensorship(file, env) {
         } catch(e) {
           const fallback = await statusResp.text();
           return {
-            ok:false,
-            response:new Response(JSON.stringify({
-              success:false,
-              error:`폴링 JSON 오류: ${fallback}`
-            }), {status:400})
+            ok: false,
+            response: new Response(JSON.stringify({
+              success: false,
+              error: `폴링 JSON 오류: ${fallback}`
+            }), { status: 400 })
           };
         }
 
@@ -485,11 +497,11 @@ async function handleVideoCensorship(file, env) {
             };
           }
           return {
-            ok:false,
-            response:new Response(JSON.stringify({
-              success:false,
-              error:`비동기 검열 실패: ${statusData.error}`
-            }), {status:400})
+            ok: false,
+            response: new Response(JSON.stringify({
+              success: false,
+              error: `비동기 검열 실패: ${statusData.error}`
+            }), { status: 400 })
           };
         }
 
@@ -502,11 +514,11 @@ async function handleVideoCensorship(file, env) {
 
       if(!finalData) {
         return {
-          ok:false,
-          response:new Response(JSON.stringify({
-            success:false,
-            error:`비동기 검열이 30초 내에 끝나지 않음`
-          }), {status:408})
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: `비동기 검열이 30초 내에 끝나지 않음`
+          }), { status: 408 })
         };
       }
 
@@ -519,25 +531,25 @@ async function handleVideoCensorship(file, env) {
       }
 
       let found = checkFramesForCensorship(frames, finalData.data, 0.5);
-      if(found.length>0) {
+      if(found.length > 0) {
         return {
-          ok:false,
-          response:new Response(JSON.stringify({
-            success:false,
-            error:`검열됨: ${found.join(", ")}`
-          }), {status:400})
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: `검열됨: ${found.join(", ")}`
+          }), { status: 400 })
         };
       }
-      return {ok:true};
+      return { ok: true };
     }
   } catch(e) {
     console.log("handleVideoCensorship error:", e);
     return {
-      ok:false,
-      response:new Response(JSON.stringify({
-        success:false,
-        error:e.message
-      }), {status:500})
+      ok: false,
+      response: new Response(JSON.stringify({
+        success: false,
+        error: e.message
+      }), { status: 500 })
     };
   }
 }
@@ -552,21 +564,26 @@ async function getMP4Duration(file) {
     const uint8 = new Uint8Array(buffer);
     for (let i = 0; i < uint8.length - 4; i++) {
       // 'm','v','h','d' => 109,118,104,100
-      if (uint8[i]===109 && uint8[i+1]===118 && uint8[i+2]===104 && uint8[i+3]===100) {
+      if (
+        uint8[i] === 109 &&
+        uint8[i + 1] === 118 &&
+        uint8[i + 2] === 104 &&
+        uint8[i + 3] === 100
+      ) {
         const boxStart = i - 4;
         const version = dv.getUint8(boxStart + 8);
         // version 0
         if (version === 0) {
-          const timescale = dv.getUint32(boxStart+20);
-          const duration = dv.getUint32(boxStart+24);
+          const timescale = dv.getUint32(boxStart + 20);
+          const duration = dv.getUint32(boxStart + 24);
           return duration / timescale;
         }
         // version 1
         else if (version === 1) {
-          const timescale = dv.getUint32(boxStart+28);
-          const high = dv.getUint32(boxStart+32);
-          const low  = dv.getUint32(boxStart+36);
-          const bigDuration = high * 2**32 + low;
+          const timescale = dv.getUint32(boxStart + 28);
+          const high = dv.getUint32(boxStart + 32);
+          const low = dv.getUint32(boxStart + 36);
+          const bigDuration = high * 2 ** 32 + low;
           return bigDuration / timescale;
         }
       }
@@ -588,9 +605,11 @@ function checkFramesForCensorship(frames, rootData, threshold=0.5) {
     // nudity
     if (f.nudity) {
       const { raw, partial, sexual_activity } = f.nudity;
-      if ((raw && raw > threshold) ||
-          (partial && partial > threshold) ||
-          (sexual_activity && sexual_activity > threshold)) {
+      if (
+        (raw && raw > threshold) ||
+        (partial && partial > threshold) ||
+        (sexual_activity && sexual_activity > threshold)
+      ) {
         reasons.push("선정적(누드/성행위)");
         break; // 한 프레임이라도 걸리면 중단
       }
@@ -601,8 +620,12 @@ function checkFramesForCensorship(frames, rootData, threshold=0.5) {
       break;
     }
     // wad (무기, 알코올, 약물)
-    if (f.wad &&
-       (f.wad.weapon > threshold || f.wad.alcohol > threshold || f.wad.drugs > threshold)) {
+    if (
+      f.wad &&
+      (f.wad.weapon > threshold ||
+        f.wad.alcohol > threshold ||
+        f.wad.drugs > threshold)
+    ) {
       reasons.push("무기/약물 등");
       break;
     }
@@ -614,9 +637,10 @@ function checkFramesForCensorship(frames, rootData, threshold=0.5) {
 // 고유 8자 코드 생성
 // =======================
 async function generateUniqueCode(env, length=8) {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   for (let attempt = 0; attempt < 10; attempt++) {
-    let code = '';
+    let code = "";
     for (let i = 0; i < length; i++) {
       code += chars.charAt(Math.floor(Math.random() * chars.length));
     }
@@ -630,7 +654,7 @@ async function generateUniqueCode(env, length=8) {
 // ArrayBuffer -> base64
 // =======================
 function arrayBufferToBase64(buffer) {
-  let binary = '';
+  let binary = "";
   const bytes = new Uint8Array(buffer);
   for (let i = 0; i < bytes.byteLength; i++) {
     binary += String.fromCharCode(bytes[i]);
@@ -729,7 +753,9 @@ function renderHTML(mediaTags, host) {
       align-items: center;
     }
     
-    /* 이미지 전용 스타일 (클릭 확대/축소) */
+    /* =================================
+       이미지: 클릭 시 확대/축소 가능
+       ================================= */
     #imageContainer img {
       width: 40vw;
       height: auto;
@@ -768,7 +794,9 @@ function renderHTML(mediaTags, host) {
       cursor: zoom-out;
     }
 
-    /* 비디오 전용 스타일 (커스텀 플레이어 작동, 클릭 확대 X) */
+    /* =================================
+       비디오: 커스텀 플레이어 + 확대 X
+       ================================= */
     #imageContainer video {
       width: 40vw;
       height: auto;
@@ -778,7 +806,7 @@ function renderHTML(mediaTags, host) {
       margin: 20px auto;
       object-fit: contain;
       transition: all 0.3s ease;
-      /* cursor 없음 */
+      cursor: default; /* 클릭 확대 제거 */
     }
 
     .container {
@@ -844,23 +872,23 @@ function renderHTML(mediaTags, host) {
       }
     }
   </style>
-  <!-- BLOUplayer 커스텀 플레이어 적용 -->
+  <!-- BLOUplayer 커스텀 플레이어 -->
   <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
   <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
 </head>
 <body>
   <div class="header-content">
     <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo" style="width: 120px; height: auto; cursor: pointer;" onclick="location.href='/';">
-      <h1 class="title-img-desktop">이미지 공유</h1>
-      <h1 class="title-img-mobile">이미지<br>공유</h1>
+    <h1 class="title-img-desktop">이미지 공유</h1>
+    <h1 class="title-img-mobile">이미지<br>공유</h1>
   </div>
   <div id="imageContainer">
     ${mediaTags}
   </div>
   <script>
-    // 이미지만 확대/축소
+    // 이미지만 클릭 확대/축소
     function toggleZoom(elem) {
-      // 비디오는 무시
+      // 비디오 무시
       if (elem.tagName.toLowerCase() !== 'img') return;
 
       if (!elem.classList.contains('landscape') && !elem.classList.contains('portrait')) {
