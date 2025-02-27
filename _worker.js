@@ -198,26 +198,29 @@ export default {
                   return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
               } else {
-                // 1분 이상: 영상의 비트레이트를 계산하여 40초 단위로 구간별 검열 요청
+                // 1분 이상: 영상의 비트레이트를 계산 -> 파일 크기 기준으로 구간별 검열 요청으로 변경
                 const videoThreshold = 0.5;
                 let reasons = []; // 실제 에러 메시지를 담을 배열
                 let debugLogs = []; // 디버그 로그를 담을 배열 (나중에 reasons에 추가)
-                const bitrate = file.size / videoDuration;
+                const segmentLength = 40; // 40초 단위 슬라이싱 (시간 기준, 실제 슬라이싱은 파일 크기 기준)
                 let segments = [];
-                const segmentLength = 40; // 40초 단위 슬라이싱
-                for (let currentStart = 0; currentStart < videoDuration; currentStart += segmentLength) {
-                  segments.push({ start: currentStart, length: Math.min(segmentLength, videoDuration - currentStart) });
+                const segmentCount = Math.ceil(videoDuration / segmentLength); // 전체 구간 수 계산
+                const segmentSize = Math.ceil(file.size / segmentCount); // 각 구간의 대략적인 크기 (바이트)
+
+                for (let i = 0; i < segmentCount; i++) {
+                  const startByte = i * segmentSize;
+                  const endByte = (i + 1) * segmentSize;
+                  segments.push({ startByte, endByte });
                 }
+
 
                 for (let i = 0; i < segments.length; i++) {
                   const seg = segments[i];
-                  const startByte = Math.floor(seg.start * bitrate);
-                  const endByte = Math.floor((seg.start + seg.length) * bitrate);
-                  debugLogs.push(`Segment ${i+1}/${segments.length}: seconds [${seg.start} ~ ${seg.start + seg.length}], bytes [${startByte} ~ ${endByte}]`);
+                  debugLogs.push(`Segment ${i+1}/${segments.length}: bytes [${seg.startByte} ~ ${seg.endByte}]`);
 
                   let segmentBlob;
                   try {
-                    segmentBlob = file.slice(startByte, endByte, file.type);
+                    segmentBlob = file.slice(seg.startByte, seg.endByte, file.type);
                     debugLogs.push(`Segment ${i+1} segmentBlob size: ${segmentBlob.size}`); // segmentBlob 크기 로그 추가
                   } catch (sliceError) {
                     debugLogs.push(`Segment ${i+1} Blob slice error: ${sliceError.message}`);
@@ -295,6 +298,7 @@ export default {
                       }
                       if (segmentResult.data && segmentResult.data.offensive && segmentResult.data.offensive.prob !== undefined && Number(segmentResult.data.offensive.prob) >= videoThreshold) {
                         reasons.push("욕설/모욕적 콘텐츠");
+                        break;
                       }
                       if (segmentResult.data && segmentResult.data.wad) {
                         for (const key in segmentResult.data.wad) {
