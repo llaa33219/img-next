@@ -1,11 +1,14 @@
+// ==============================
 // 전역: 중복 요청 관리 Map
+// ==============================
 const requestsInProgress = {};
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // (디버그 용) 요청 로그 - 실제 운영에서 노출을 최소화하고 싶다면 주석 처리
+    // (디버그 용) 요청 로그
+    // 실제 운영에서 노출 최소화하려면 주석 처리하거나 console.log 제거
     console.log("Incoming Request:", {
       method: request.method,
       url: request.url,
@@ -43,11 +46,14 @@ export default {
           // 실 업로드 처리
           let finalResp;
           try {
-            finalResp = await handleUpload(request, env, ctx);
+            finalResp = await handleUpload(request, env);
             requestsInProgress[cfReqId].resolve(finalResp);
           } catch (err) {
             console.log("handleUpload error:", err);
-            const failResp = new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
+            const failResp = new Response(
+              JSON.stringify({ success: false, error: err.message }),
+              { status: 500 }
+            );
             requestsInProgress[cfReqId].reject(failResp);
             finalResp = failResp;
           }
@@ -56,7 +62,7 @@ export default {
       }
       // cfReqId 없으면 그냥 업로드 처리
       else {
-        return handleUpload(request, env, ctx);
+        return handleUpload(request, env);
       }
     }
 
@@ -88,16 +94,21 @@ export default {
           return { code, object };
         })
       );
+
       let mediaTags = "";
       for (const { code, object } of objects) {
         if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
+          // 동영상
           mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls onclick="toggleZoom(this)"></video>\n`;
         } else {
+          // 이미지
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
         }
       }
       const htmlContent = renderHTML(mediaTags, url.host);
-      return new Response(htmlContent, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+      return new Response(htmlContent, {
+        headers: { "Content-Type": "text/html; charset=UTF-8" }
+      });
     }
 
     // =======================================
@@ -110,7 +121,7 @@ export default {
 // =======================
 // 메인 업로드 처리 함수
 // =======================
-async function handleUpload(request, env, ctx) {
+async function handleUpload(request, env) {
   const formData = await request.formData();
   const files = formData.getAll('file');
   if (!files || files.length === 0) {
@@ -160,13 +171,14 @@ async function handleUpload(request, env, ctx) {
 // =======================
 async function handleImageCensorship(file, env) {
   try {
-    // --- (1) 클라우드플레어 이미지 리사이즈 --- 
-    // 웹P같은 형식으로 변환 가능하지만, 여기서는 단순 resize만 시도.
+    // --- (1) 클라우드플레어 이미지 리사이즈 ---
     let fileForCensorship = file;
     try {
       const buf = await file.arrayBuffer();
       const base64 = arrayBufferToBase64(buf);
       const dataUrl = `data:${file.type};base64,${base64}`;
+
+      // cf image resizing (600x600 안에 fit)
       const resizedResp = await fetch(new Request(dataUrl, {
         cf: { image: { width: 600, height: 600, fit: "inside" } }
       }));
@@ -174,7 +186,7 @@ async function handleImageCensorship(file, env) {
         fileForCensorship = await resizedResp.blob();
       }
     } catch(e) {
-      // 리사이즈 실패(이미지 포맷 불량 등) 시 그냥 원본으로 검사
+      // 리사이즈 실패 시 그냥 원본으로 검사
       console.log("이미지 리사이즈 실패:", e);
     }
 
@@ -208,22 +220,44 @@ async function handleImageCensorship(file, env) {
     }
 
     // --- (3) 결과판단 ---
+    if (data.status === 'failure') {
+      // (추가) usage_limit 에러 감지
+      // e.g. { "status":"failure", "error":{ "type":"usage_limit","code":37,... } }
+      if (data.error && data.error.type === 'usage_limit' && data.error.code === 37) {
+        return {
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: "검열 api의 실시간 처리량 문제로 인해 잠시 후 시도해주세요"
+          }), { status: 503 })
+        };
+      }
+      // 일반 failure
+      return {
+        ok: false,
+        response: new Response(JSON.stringify({
+          success: false,
+          error: data.error?.message || "이미지 검열 실패"
+        }), { status: 400 })
+      };
+    }
+
     // 예: nudity.raw, nudity.partial, wad.weapon, etc.
     let reasons = [];
     if (data.nudity) {
       const { is_nude, raw, partial } = data.nudity;
-      if (is_nude===true || (raw && raw>0.3) || (partial && partial>0.3)) {
+      if (is_nude === true || (raw && raw > 0.3) || (partial && partial > 0.3)) {
         reasons.push("선정적 콘텐츠(누드)");
       }
     }
-    if (data.offensive && data.offensive.prob>0.3) {
+    if (data.offensive && data.offensive.prob > 0.3) {
       reasons.push("욕설/모욕적 콘텐츠");
     }
-    if (data.wad && (data.wad.weapon>0.3 || data.wad.alcohol>0.3 || data.wad.drugs>0.3)) {
+    if (data.wad && (data.wad.weapon > 0.3 || data.wad.alcohol > 0.3 || data.wad.drugs > 0.3)) {
       reasons.push("위험물(무기/약물 등)");
     }
 
-    if (reasons.length>0) {
+    if (reasons.length > 0) {
       return {
         ok: false,
         response: new Response(
@@ -247,7 +281,7 @@ async function handleImageCensorship(file, env) {
 // =======================
 async function handleVideoCensorship(file, env) {
   try {
-    // (1) 용량 제한 - 50MB 예시
+    // (1) 용량 제한 - 여기서는 50MB 예시
     if (file.size > 50 * 1024 * 1024) {
       return {
         ok: false,
@@ -259,7 +293,7 @@ async function handleVideoCensorship(file, env) {
     let videoDuration = await getMP4Duration(file);
     if (!videoDuration) videoDuration = 0;
 
-    // (3) 1분 미만 => Sync 검사
+    // (3) 1분 미만 => check-sync
     if (videoDuration < 60 && videoDuration !== 0) {
       const sightForm = new FormData();
       sightForm.append('media', file, 'upload');
@@ -281,6 +315,7 @@ async function handleVideoCensorship(file, env) {
           }), {status:400})
         };
       }
+
       let data;
       try {
         data = await syncResp.json();
@@ -295,7 +330,27 @@ async function handleVideoCensorship(file, env) {
         };
       }
 
-      // 프레임 정보 파싱
+      // (추가) usage_limit 에러 처리
+      if (data.status === 'failure') {
+        if (data.error && data.error.type === 'usage_limit' && data.error.code === 37) {
+          return {
+            ok: false,
+            response: new Response(JSON.stringify({
+              success: false,
+              error: "검열 api의 실시간 처리량 문제로 인해 잠시 후 시도해주세요"
+            }), { status: 503 })
+          };
+        }
+        return {
+          ok: false,
+          response: new Response(JSON.stringify({
+            success: false,
+            error: `동영상(sync) 처리 실패: ${data.error?.message || '알 수 없는 오류'}`
+          }), { status: 400 })
+        };
+      }
+
+      // frames 분석
       let frames = [];
       if (data.data && data.data.frames) {
         frames = Array.isArray(data.data.frames) ? data.data.frames : [data.data.frames];
@@ -303,7 +358,6 @@ async function handleVideoCensorship(file, env) {
         frames = Array.isArray(data.frames) ? data.frames : [data.frames];
       }
 
-      // 프레임 내 nudity,offensive,wad 체크
       let found = checkFramesForCensorship(frames, data.data, 0.5);
       if (found.length>0) {
         return {
@@ -317,7 +371,7 @@ async function handleVideoCensorship(file, env) {
       return { ok: true };
     }
 
-    // (4) 1분 이상 => async 모드
+    // (4) 1분 이상 => async=1
     else {
       const sightForm = new FormData();
       sightForm.append('media', file, 'upload');
@@ -341,6 +395,7 @@ async function handleVideoCensorship(file, env) {
           }), {status:400})
         };
       }
+
       let initData;
       try {
         initData = await initResp.json();
@@ -354,7 +409,18 @@ async function handleVideoCensorship(file, env) {
           }), {status:400})
         };
       }
-      if(initData.status==='failure') {
+
+      // (추가) usage_limit 에러 처리
+      if (initData.status === 'failure') {
+        if (initData.error && initData.error.type === 'usage_limit' && initData.error.code === 37) {
+          return {
+            ok: false,
+            response: new Response(JSON.stringify({
+              success: false,
+              error: "검열 api의 실시간 처리량 문제로 인해 잠시 후 시도해주세요"
+            }), { status: 503 })
+          };
+        }
         return {
           ok:false,
           response:new Response(JSON.stringify({
@@ -363,6 +429,7 @@ async function handleVideoCensorship(file, env) {
           }), {status:400})
         };
       }
+
       if(!initData.request || !initData.request.id) {
         return {
           ok:false,
@@ -374,14 +441,14 @@ async function handleVideoCensorship(file, env) {
       }
       const reqId = initData.request.id;
 
-      // (4)-b. 5초 간격 최대 30초(6번) 폴링
+      // (4)-b 폴링(5초 간격, 최대 6회=30초)
       let finalData = null;
       let maxAttempts = 6;
-      while (maxAttempts > 0) {
+      while(maxAttempts>0) {
         await new Promise(r => setTimeout(r, 5000));
         const statusUrl = `https://api.sightengine.com/1.0/video/check.json?request_id=${reqId}&models=nudity,wad,offensive&api_user=${env.SIGHTENGINE_API_USER}&api_secret=${env.SIGHTENGINE_API_SECRET}`;
         const statusResp = await fetch(statusUrl);
-        if (!statusResp.ok) {
+        if(!statusResp.ok) {
           let errText = await statusResp.text();
           return {
             ok:false,
@@ -391,6 +458,7 @@ async function handleVideoCensorship(file, env) {
             }), {status:400})
           };
         }
+
         let statusData;
         try {
           statusData = await statusResp.json();
@@ -404,7 +472,18 @@ async function handleVideoCensorship(file, env) {
             }), {status:400})
           };
         }
+
+        // (추가) usage_limit 에러 처리
         if (statusData.status === 'failure') {
+          if (statusData.error && statusData.error.type === 'usage_limit' && statusData.error.code === 37) {
+            return {
+              ok: false,
+              response: new Response(JSON.stringify({
+                success: false,
+                error: "검열 api의 실시간 처리량 문제로 인해 잠시 후 시도해주세요"
+              }), { status: 503 })
+            };
+          }
           return {
             ok:false,
             response:new Response(JSON.stringify({
@@ -413,31 +492,34 @@ async function handleVideoCensorship(file, env) {
             }), {status:400})
           };
         }
-        if (statusData.progress_status === 'finished') {
+
+        if(statusData.progress_status === 'finished') {
           finalData = statusData;
           break;
         }
         maxAttempts--;
       }
-      if (!finalData) {
+
+      if(!finalData) {
         return {
           ok:false,
           response:new Response(JSON.stringify({
             success:false,
-            error:`비동기 검열이 30초 내 끝나지 않음(타임아웃)`
+            error:`비동기 검열이 30초 내에 끝나지 않음`
           }), {status:408})
         };
       }
 
-      // (4)-c. 최종 프레임 분석
+      // 4-c 최종 프레임 분석
       let frames = [];
       if (finalData.data && finalData.data.frames) {
         frames = Array.isArray(finalData.data.frames) ? finalData.data.frames : [finalData.data.frames];
-      } else if (finalData.frames) {
+      } else if(finalData.frames) {
         frames = Array.isArray(finalData.frames) ? finalData.frames : [finalData.frames];
       }
+
       let found = checkFramesForCensorship(frames, finalData.data, 0.5);
-      if (found.length>0) {
+      if(found.length>0) {
         return {
           ok:false,
           response:new Response(JSON.stringify({
@@ -446,7 +528,7 @@ async function handleVideoCensorship(file, env) {
           }), {status:400})
         };
       }
-      return { ok: true };
+      return {ok:true};
     }
   } catch(e) {
     console.log("handleVideoCensorship error:", e);
@@ -506,7 +588,9 @@ function checkFramesForCensorship(frames, rootData, threshold=0.5) {
     // nudity
     if (f.nudity) {
       const { raw, partial, sexual_activity } = f.nudity;
-      if ((raw && raw > threshold) || (partial && partial > threshold) || (sexual_activity && sexual_activity > threshold)) {
+      if ((raw && raw > threshold) ||
+          (partial && partial > threshold) ||
+          (sexual_activity && sexual_activity > threshold)) {
         reasons.push("선정적(누드/성행위)");
         break; // 한 프레임이라도 걸리면 중단
       }
@@ -517,12 +601,12 @@ function checkFramesForCensorship(frames, rootData, threshold=0.5) {
       break;
     }
     // wad (무기, 알코올, 약물)
-    if (f.wad && (f.wad.weapon > threshold || f.wad.alcohol > threshold || f.wad.drugs > threshold)) {
+    if (f.wad &&
+       (f.wad.weapon > threshold || f.wad.alcohol > threshold || f.wad.drugs > threshold)) {
       reasons.push("무기/약물 등");
       break;
     }
   }
-
   return reasons;
 }
 
@@ -558,7 +642,7 @@ function arrayBufferToBase64(buffer) {
 // 최종 HTML 렌더
 // =======================
 function renderHTML(mediaTags, host) {
-  // 간단히 이미지/영상만 보여주는 페이지
+  // 간단히 이미지/영상만 보여주는 페이지 예시
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
