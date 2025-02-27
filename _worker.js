@@ -198,28 +198,21 @@ export default {
                   return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
               } else {
-                // 1분 이상: 영상의 앞부분 40초만 잘라서 검열
+                // 1분 이상: 영상의 앞부분 2MB만 잘라서 검열 (단순화)
                 const videoThreshold = 0.5;
                 let reasons = []; // 실제 에러 메시지를 담을 배열
                 let debugLogs = []; // 디버그 로그를 담을 배열 (나중에 reasons에 추가)
                 const segmentLength = Math.min(40, videoDuration); // 최대 40초, 실제 영상 길이보다 짧으면 영상 길이만큼만
-
+                const finalEndByte = 2 * 1024 * 1024; // 고정 segment 크기: 2MB
                 const startByte = 0;
-                // 비트레이트 계산 없이, 파일 크기에 비례하여 endByte 계산 (단순화)
-                const bitrate = file.size / videoDuration; // 기존 비트레이트 계산 유지 (참고용)
-                const endByte = Math.floor(segmentLength * bitrate); // 비트레이트 * 시간으로 바이트 계산 (참고용)
-                const endByteFileSizeRatio = Math.floor(file.size * (segmentLength / videoDuration)); // 파일 크기 비율로 endByte 계산 (단순화)
-                // segment blob 최소 크기 3MB 보장
-                const MIN_SEGMENT_SIZE = 3 * 1024 * 1024;
-                const finalEndByte = Math.max(endByteFileSizeRatio > 0 ? endByteFileSizeRatio : 1024 * 1024, MIN_SEGMENT_SIZE);
 
-                debugLogs.push(`Segment 1/1: seconds [0 ~ ${segmentLength}], bytes [0 ~ ${finalEndByte}] (FileSizeRatio 방식, 최소 ${MIN_SEGMENT_SIZE} bytes 보장)`);
-                debugLogs.push(`Segment 1/1: seconds [0 ~ ${segmentLength}], bytes [0 ~ ${endByte}] (Bitrate 방식 - 참고용)`);
+
+                debugLogs.push(`Segment 1/1: seconds [0 ~ ${segmentLength}], bytes [0 ~ ${finalEndByte}] (고정 2MB slice)`);
 
 
                 let segmentBlob;
                 try {
-                  segmentBlob = file.slice(startByte, finalEndByte, file.type); // 단순 파일 크기 비율 기반 slice
+                  segmentBlob = file.slice(startByte, finalEndByte, file.type); // 고정 크기 slice
                   debugLogs.push(`Segment 1/1 segmentBlob size: ${segmentBlob.size}`); // segmentBlob 크기 로그 추가
                 } catch (sliceError) {
                   debugLogs.push(`Segment 1/1 Blob slice error: ${sliceError.message}`);
@@ -254,14 +247,14 @@ export default {
                 try {
                   const segmentResult = await segmentResponse.json();
                   debugLogs.push(`Segment 1/1 response: ${JSON.stringify(segmentResult)}`);
-                
+
                   let frames = [];
                   if (segmentResult.data && segmentResult.data.frames) {
                     frames = Array.isArray(segmentResult.data.frames) ? segmentResult.data.frames : [segmentResult.data.frames];
                   } else if (segmentResult.frames) {
                     frames = Array.isArray(segmentResult.frames) ? segmentResult.frames : [segmentResult.frames];
                   }
-                
+
                   if (frames.length > 0) {
                     for (const frame of frames) {
                       if (frame.nudity) {
@@ -307,13 +300,17 @@ export default {
                       }
                     }
                   }
+
                   if (reasons.length > 0) {
                     // 에러 발생 시, 디버그 로그도 같이 전달
                     reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
                     return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                   }
-                } catch (e) {
-                  return new Response(JSON.stringify({ success: false, error: "영상 검열 처리 중 오류 발생: " + e.message }), { status: 400 });
+                } catch (jsonError) {
+                  debugLogs.push(`Segment 1/1 JSON parse error: ${jsonError.message}`);
+                  reasons.push(`JSON 파싱 에러 발생: ${jsonError.message}`);
+                  reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
+                  return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
               }
             }
