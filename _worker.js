@@ -1,6 +1,7 @@
 export default {
     async fetch(request, env, ctx) {
       const url = new URL(request.url);
+      // 디버깅: 들어온 요청의 기본 정보를 출력합니다.
       console.log("Incoming Request:", {
         method: request.method,
         url: request.url,
@@ -8,29 +9,35 @@ export default {
       });
       console.log("Worker triggered:", request.method, url.pathname);
   
+      // 헬퍼 함수: ArrayBuffer를 Base64 문자열로 변환
       const arrayBufferToBase64 = (buffer) => {
         let binary = '';
         const bytes = new Uint8Array(buffer);
-        for (let i = 0; i < bytes.byteLength; i++) {
+        const len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
           binary += String.fromCharCode(bytes[i]);
         }
         return btoa(binary);
       };
   
+      // 헬퍼 함수: MP4 파일에서 mvhd 박스를 찾아 duration(초)를 추출 (버전0,1 지원)
       async function getMP4Duration(file) {
         try {
           const buffer = await file.arrayBuffer();
           const dv = new DataView(buffer);
           const uint8 = new Uint8Array(buffer);
+          // mvhd 문자열의 아스키 코드: m=109, v=118, h=104, d=100
           for (let i = 0; i < uint8.length - 4; i++) {
             if (uint8[i] === 109 && uint8[i + 1] === 118 && uint8[i + 2] === 104 && uint8[i + 3] === 100) {
-              const boxStart = i - 4;
+              const boxStart = i - 4; // mvhd 박스: size(4)+type(4)
               const version = dv.getUint8(boxStart + 8);
               if (version === 0) {
+                // version 0: header = 4+4+1+3+4+4+4+4
                 const timescale = dv.getUint32(boxStart + 20);
                 const duration = dv.getUint32(boxStart + 24);
                 return duration / timescale;
               } else if (version === 1) {
+                // version 1: header = 4+4+1+3+8+8+4+8
                 const timescale = dv.getUint32(boxStart + 28);
                 const high = dv.getUint32(boxStart + 32);
                 const low = dv.getUint32(boxStart + 36);
@@ -45,21 +52,23 @@ export default {
         }
       }
   
-      // 전역 디버그 로그 배열
-      let allDebugLogs = [];
-  
+      // POST /upload : 다중 파일 업로드 처리 (검열 먼저 진행)
       if (request.method === 'POST' && url.pathname === '/upload') {
         try {
           const formData = await request.formData();
           const files = formData.getAll('file');
           if (!files || files.length === 0) {
-            return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.', debug: allDebugLogs.join(" | ") }), { status: 400 });
+            return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
           }
-  
+          // 1. 검열 단계: 모든 파일에 대해 검열 API 호출 (검열 통과 못하면 업로드 중단)
           for (const file of files) {
             if (file.type.startsWith('image/')) {
+              // -------------------------------------------
+              // 이미지 검열
+              // -------------------------------------------
               let fileForCensorship = file;
               try {
+                // 이미지 리사이징: 최대 600px 축소하여 검열 속도 향상
                 const buffer = await file.arrayBuffer();
                 const base64 = arrayBufferToBase64(buffer);
                 const dataUrl = `data:${file.type};base64,${base64}`;
@@ -69,6 +78,7 @@ export default {
                 const resizedResponse = await fetch(reqForResize);
                 fileForCensorship = await resizedResponse.blob();
               } catch (e) {
+                // 리사이징 실패 시 원본 사용
                 fileForCensorship = file;
               }
   
@@ -98,19 +108,25 @@ export default {
                 reasons.push("잔인하거나 위험한 콘텐츠");
               }
               if (reasons.length > 0) {
-                return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", "), debug: allDebugLogs.join(" | ") }), { status: 400 });
+                return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
               }
             } else if (file.type.startsWith('video/')) {
+              // -------------------------------------------
+              // 동영상 검열 (1분 미만은 그대로 처리, 1분 이상은 구간별로 처리)
+              // -------------------------------------------
+              // 1) 용량 체크: 50MB 초과면 경고
               if (file.size > 50 * 1024 * 1024) {
-                return new Response(JSON.stringify({ success: false, error: "영상 용량이 50MB를 초과합니다.", debug: allDebugLogs.join(" | ") }), { status: 400 });
+                return new Response(JSON.stringify({ success: false, error: "영상 용량이 50MB를 초과합니다." }), { status: 400 });
               }
   
+              // 2) 영상 길이(초) 확인 (mp4 기준)
               let videoDuration = await getMP4Duration(file);
               if (videoDuration === null) {
                 videoDuration = 0;
               }
   
               if (videoDuration < 60) {
+                // 1분 미만: 기존 방식 그대로 처리
                 const videoThreshold = 0.5;
                 const sightForm = new FormData();
                 sightForm.append('media', file, 'upload');
@@ -178,38 +194,45 @@ export default {
                   }
                 }
                 if (reasons.length > 0) {
-                  return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", "), debug: allDebugLogs.join(" | ") }), { status: 400 });
+                  return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                 }
               } else {
-                // 1분 이상인 경우: 전체 파일을 전송하고 'start'와 'length' 파라미터(초)를 통해 40초 단위로 요청
+                // 1분 이상: 영상의 비트레이트를 계산하여 40초 단위로 구간별 검열 요청
                 const videoThreshold = 0.5;
-                let reasons = [];
-                const segmentLength = 40;
+                let reasons = []; // 실제 에러 메시지를 담을 배열
+                let debugLogs = []; // 디버그 로그를 담을 배열 (나중에 reasons에 추가)
+                const bitrate = file.size / videoDuration;
                 let segments = [];
+                const segmentLength = 40; // 40초 단위 슬라이싱
+  
+                // MP4 파일의 올바른 분석을 위해 파일의 헤더(처음 1MB 정도)를 미리 추출
+                const headerSize = 1024 * 1024; // 1MB
+                const headerBlob = file.slice(0, headerSize, file.type);
+  
                 for (let currentStart = 0; currentStart < videoDuration; currentStart += segmentLength) {
                   segments.push({ start: currentStart, length: Math.min(segmentLength, videoDuration - currentStart) });
                 }
   
                 for (let i = 0; i < segments.length; i++) {
                   const seg = segments[i];
-                  allDebugLogs.push(`Segment ${i+1}/${segments.length}: seconds [${seg.start} ~ ${seg.start + seg.length}]`);
+                  const startByte = Math.floor(seg.start * bitrate);
+                  const endByte = Math.floor((seg.start + seg.length) * bitrate);
+                  debugLogs.push(`Segment ${i+1}/${segments.length}: seconds [${seg.start} ~ ${seg.start + seg.length}], bytes [${startByte} ~ ${endByte}]`);
   
+                  // 각 구간의 Blob에 헤더를 추가하여 올바른 MP4 파일 형태로 구성
+                  const segmentBlob = new Blob([headerBlob, file.slice(startByte, endByte, file.type)], { type: file.type });
                   const segmentForm = new FormData();
-                  segmentForm.append('media', file, 'upload');
-                  segmentForm.append('start', seg.start.toString());
-                  segmentForm.append('length', seg.length.toString());
+                  segmentForm.append('media', segmentBlob, 'upload');
                   segmentForm.append('models', 'nudity,wad,offensive');
                   segmentForm.append('api_user', env.SIGHTENGINE_API_USER);
                   segmentForm.append('api_secret', env.SIGHTENGINE_API_SECRET);
   
-                  const startTime = Date.now();
                   const segmentResponse = await fetch('https://api.sightengine.com/1.0/video/check-sync.json', {
                     method: 'POST',
                     body: segmentForm
                   });
-                  const durationFetch = Date.now() - startTime;
                   const segmentResult = await segmentResponse.json();
-                  allDebugLogs.push(`Segment ${i+1} response (took ${durationFetch}ms): ${JSON.stringify(segmentResult)}`);
+                  debugLogs.push(`Segment ${i+1} response: ${JSON.stringify(segmentResult)}`);
   
                   let frames = [];
                   if (segmentResult.data && segmentResult.data.frames) {
@@ -265,13 +288,16 @@ export default {
                   }
   
                   if (reasons.length > 0) {
-                    return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", "), debug: allDebugLogs.join(" | ") }), { status: 400 });
+                    // 에러 발생 시, 디버그 로그도 같이 전달
+                    reasons.push("DEBUG LOGS: " + debugLogs.join(" | "));
+                    return new Response(JSON.stringify({ success: false, error: "검열됨: " + reasons.join(", ") }), { status: 400 });
                   }
                 }
               }
             }
           }
   
+          // 2. 검열 통과 후: 각 파일 별로 R2에 저장
           let codes = [];
           for (const file of files) {
             const generateRandomCode = (length = 8) => {
@@ -289,7 +315,7 @@ export default {
               if (!existing) break;
             }
             if (!code) {
-              return new Response(JSON.stringify({ success: false, error: '코드 생성 실패', debug: allDebugLogs.join(" | ") }), { status: 500 });
+              return new Response(JSON.stringify({ success: false, error: '코드 생성 실패' }), { status: 500 });
             }
             const fileBuffer = await file.arrayBuffer();
             await env.IMAGES.put(code, fileBuffer, {
@@ -299,13 +325,14 @@ export default {
           }
           const urlCodes = codes.join(",");
           const imageUrl = `https://${url.host}/${urlCodes}`;
-          return new Response(JSON.stringify({ success: true, url: imageUrl, debug: allDebugLogs.join(" | ") }), {
+          return new Response(JSON.stringify({ success: true, url: imageUrl }), {
             headers: { 'Content-Type': 'application/json' }
           });
         } catch (err) {
-          return new Response(JSON.stringify({ success: false, error: err.message, debug: allDebugLogs.join(" | ") }), { status: 500 });
+          return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
         }
       }
+      // GET /{코드} : R2에서 파일 반환 또는 HTML 래퍼 페이지 제공 (다중 코드 지원)
       else if (request.method === 'GET' && /^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname)) {
         if (url.searchParams.get('raw') === '1') {
           const code = url.pathname.slice(1).split(",")[0];
@@ -339,280 +366,193 @@ export default {
     <title>이미지 공유</title>
     <style>
       body {
-      display: flex;
-      flex-direction: column;
-      justify-content: flex-start;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-      padding: 20px;
-      overflow: auto;
-    }
-  
-    .upload-container {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-  
-    button {
-      background-color: #007BFF;
-      color: white;
-      border: none;
-      border-radius: 20px;
-      padding: 10px 20px;
-      margin: 20px 0;
-      width: 600px;
-      height: 61px;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
-      cursor: pointer;
-      transition: background-color 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease;
-      font-weight: bold;
-      font-size: 18px;
-      text-align: center;
-    }
-  
-    button:hover {
-      background-color: #005BDD;
-      transform: translateY(2px);
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    }
-  
-    button:active {
-      background-color: #0026a3;
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    }
-  
-    #fileNameDisplay {
-      font-size: 16px;
-      margin-top: 10px;
-      color: #333;
-    }
-  
-    #linkBox {
-      width: 500px;
-      height: 40px;
-      margin: 20px 0;
-      font-size: 16px;
-      padding: 10px;
-      text-align: center;
-      border-radius: 14px;
-    }
-  
-    .copy-button {
-      background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center;
-      background-size: contain;
-      border: none;
-      cursor: pointer;
-      width: 60px;
-      height: 40px;
-      margin-left: 10px;
-      vertical-align: middle;
-    }
-  
-    .link-container {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-    }
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: center;
+        height: 100vh;
+        margin: 0;
+        padding: 20px;
+        overflow: auto;
+      }
     
-    /* 기존 스타일 유지 */
-    #imageContainer img,
-    #imageContainer video {
-      width: 40vw;
-      height: auto;
-      max-width: 40vw;
-      max-height: 50vh;
-      display: block;
-      margin: 20px auto;
-      cursor: pointer;
-      transition: all 0.3s ease;
-      object-fit: contain;
-      cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
-    }
-
-    /* 가로가 긴 경우 */
-    #imageContainer img.landscape,
-    #imageContainer video.landscape {
-      width: 40vw;
-      height: auto;
-      max-width: 40vw;
-      max-height: 50vh;
-      cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
-    }
-
-    /* 세로가 긴 경우 */
-    #imageContainer img.portrait,
-    #imageContainer video.portrait {
-      width: auto;
-      height: 50vh;
-      max-width: 40vw;
-      max-height: 50vh;
-      cursor: zoom-in; /* 기본 상태에서는 확대 아이콘 */
-    }
-  
-    /* 확대된 상태의 가로가 긴 경우 */
-    #imageContainer img.expanded.landscape,
-    #imageContainer video.expanded.landscape {
-      width: 80vw;
-      height: auto;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
-    }
-
-    /* 확대된 상태의 세로가 긴 경우 */
-    #imageContainer img.expanded.portrait,
-    #imageContainer video.expanded.portrait {
-      width: auto;
-      height: 100vh;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
-    }
-  
-    .container {
-      text-align: center;
-    }
-  
-    .header-content {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 20px;
-      font-size: 30px;
-      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-    }
-  
-    .header-content img {
-      margin-right: 20px;
-      border-radius: 14px;
-    }
-  
-    .toggle-button {
-      background-color: #28a745;
-      color: white;
-      border: none;
-      border-radius: 50%;
-      width: 40px;
-      height: 40px;
-      display: none;
-      justify-content: center;
-      align-items: center;
-      cursor: pointer;
-      font-size: 24px;
-      margin-left: 20px;
-    }
-  
-    .hidden {
-      display: none;
-    }
-  
-    /* 수정된 검열된 이미지 스타일 */
-    .censored {
-      position: relative;
-      display: inline-block;
-      /* 이미지 자체는 숨기고 오버레이로만 표시 */
-      width: 100%;
-      height: 100%;
-    }
-  
-    .censored img,
-    .censored video {
-      display: none; /* 미디어 숨김 */
-    }
-  
-    .censored .overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background-color: rgba(0, 0, 0, 0.8); /* 검열 배경 */
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      color: white;
-      font-size: 24px;
-      font-weight: bold;
-      text-shadow: 2px 2px 4px #000;
-      pointer-events: none;
-    }
-  
-    /* 사용자 정의 컨텍스트 메뉴 스타일 수정 */
-    .custom-context-menu {
-      color: #000; /* 텍스트 색상을 검정으로 설정 */
-      position: absolute;
-      background-color: #e0e0e0;
-      z-index: 1000;
-      width: 150px;
-      display: none; /* 기본적으로 숨김 */
-      flex-direction: column;
-      border-radius: 8px; /* 컨텍스트 메뉴의 모서리를 둥글게 설정 */
-      box-shadow: none; /* 그림자 제거 */
-      padding: 0; /* 내부 여백 제거 */
-      
-      /* 추가된 스타일 */
-      overflow: hidden; /* 메뉴 내에서 넘치는 부분 숨김 */
-      box-sizing: border-box; /* 패딩과 보더를 포함한 크기 계산 */
-    }
-
-    .custom-context-menu button {
-      color: #000;
-      background-color: #e7e7e7;
-      text-align: left;
-      width: 100%;
-      cursor: pointer;
-      font-size: 16px; /* 글자 크기 유지 */
-      padding: 6px 10px; /* 버튼 세로 길이 조정 */
-      margin: 0; /* 버튼 간 공간 제거 */
-      border: none; /* 기본 테두리 제거 */
-      border-radius: 0; /* 모서리 둥글지 않게 설정 */
-      box-shadow: none; /* 그림자 제거 */
-      
-      /* 추가된 스타일 */
-      box-sizing: border-box; /* 패딩과 보더를 포함한 크기 계산 */
-      
-      /* Transition 재정의: transform을 제외하고 background-color와 box-shadow만 포함 */
-      transition: background-color 0.3s ease, box-shadow 0.3s ease;
-      
-      /* 기본 transform 제거 */
-      transform: none;
-    }
-
-    .custom-context-menu button:hover {
-      background-color: #9c9c9c;
-      box-shadow: none;
-      
-      /* 호버 시 transform 제거 */
-      transform: none;
-    }
-
-    .title-img-desktop {
-      display: block;
-    }
-
-    .title-img-mobile {
-      display: none;
-    }
-
-    @media (max-width: 768px) {
+      .upload-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+    
       button {
-        width: 300px;
+        background-color: #007BFF;
+        color: white;
+        border: none;
+        border-radius: 20px;
+        padding: 10px 20px;
+        margin: 20px 0;
+        width: 600px;
+        height: 61px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+        cursor: pointer;
+        transition: background-color 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease;
+        font-weight: bold;
+        font-size: 18px;
+        text-align: center;
       }
+    
+      button:hover {
+        background-color: #005BDD;
+        transform: translateY(2px);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      }
+    
+      button:active {
+        background-color: #0026a3;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      }
+    
+      #fileNameDisplay {
+        font-size: 16px;
+        margin-top: 10px;
+        color: #333;
+      }
+    
       #linkBox {
-        width: 200px;
+        width: 500px;
+        height: 40px;
+        margin: 20px 0;
+        font-size: 16px;
+        padding: 10px;
+        text-align: center;
+        border-radius: 14px;
       }
+    
+      .copy-button {
+        background: url('https://img.icons8.com/ios-glyphs/30/000000/copy.png') no-repeat center;
+        background-size: contain;
+        border: none;
+        cursor: pointer;
+        width: 60px;
+        height: 40px;
+        margin-left: 10px;
+        vertical-align: middle;
+      }
+    
+      .link-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+      
+      #imageContainer img,
+      #imageContainer video {
+        width: 40vw;
+        height: auto;
+        max-width: 40vw;
+        max-height: 50vh;
+        display: block;
+        margin: 20px auto;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        object-fit: contain;
+        cursor: zoom-in;
+      }
+    
+      #imageContainer img.landscape,
+      #imageContainer video.landscape {
+        width: 40vw;
+        height: auto;
+        max-width: 40vw;
+        cursor: zoom-in;
+      }
+    
+      #imageContainer img.portrait,
+      #imageContainer video.portrait {
+        width: auto;
+        height: 50vh;
+        max-width: 40vw;
+        cursor: zoom-in;
+      }
+    
+      #imageContainer img.expanded.landscape,
+      #imageContainer video.expanded.landscape {
+        width: 80vw;
+        height: auto;
+        max-width: 80vw;
+        max-height: 100vh;
+        cursor: zoom-out;
+      }
+    
+      #imageContainer img.expanded.portrait,
+      #imageContainer video.expanded.portrait {
+        width: auto;
+        height: 100vh;
+        max-width: 80vw;
+        max-height: 100vh;
+        cursor: zoom-out;
+      }
+    
+      .container {
+        text-align: center;
+      }
+    
       .header-content {
-        font-size: 23px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 20px;
+        font-size: 30px;
+        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
       }
-      .title-img-desktop {
+    
+      .header-content img {
+        margin-right: 20px;
+        border-radius: 14px;
+      }
+    
+      .toggle-button {
+        background-color: #28a745;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        display: none;
+        justify-content: center;
+        align-items: center;
+        cursor: pointer;
+        font-size: 24px;
+        margin-left: 20px;
+      }
+    
+      .hidden {
         display: none;
       }
-      .title-img-mobile {
+    
+      .title-img-desktop {
         display: block;
       }
-    }
+    
+      .title-img-mobile {
+        display: none;
+      }
+    
+      @media (max-width: 768px) {
+        button {
+          width: 300px;
+        }
+        #linkBox {
+          width: 200px;
+        }
+        .header-content {
+          font-size: 23px;
+        }
+        .title-img-desktop {
+          display: none;
+        }
+        .title-img-mobile {
+          display: block;
+        }
+      }
     </style>
     <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
     <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
