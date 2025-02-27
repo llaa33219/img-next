@@ -729,8 +729,7 @@ function renderHTML(mediaTags, host) {
       align-items: center;
     }
     
-    #imageContainer img,
-    #imageContainer video {
+    #imageContainer img {
       width: 40vw;
       height: auto;
       max-width: 40vw;
@@ -743,8 +742,7 @@ function renderHTML(mediaTags, host) {
       cursor: zoom-in;
     }
   
-    #imageContainer img.landscape,
-    #imageContainer video.landscape {
+    #imageContainer img.landscape {
       width: 40vw;
       height: auto;
       max-width: 40vw;
