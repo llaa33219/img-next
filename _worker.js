@@ -841,7 +841,6 @@ function renderHTML(mediaTags, host) {
     }
   </style>
   <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
-  <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
 </head>
 <body>
   <div class="header-content">
@@ -872,6 +871,7 @@ function renderHTML(mediaTags, host) {
       window.location.href='/';
     });
   </script>
+    <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
 </body>
 </html>`;
 }
