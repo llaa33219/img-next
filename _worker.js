@@ -98,10 +98,10 @@ export default {
       let mediaTags = "";
       for (const { code, object } of objects) {
         if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
-          // 동영상 (controls 추가)
-          mediaTags += `<video src="https://${url.host}/${code}?raw=1" preload="metadata" controls class="wrapped landscape"></video>\n`;
+          // 동영상 => 커스텀 플레이어 인식 위해 기본 <video>만 표시
+          mediaTags += `<video src="https://${url.host}/${code}?raw=1" class="wrapped landscape"></video>\n`;
         } else {
-          // 이미지 (이미지 클릭 확대/축소 유지)
+          // 이미지 => 클릭 확대/축소 가능
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
         }
       }
@@ -729,10 +729,7 @@ function renderHTML(mediaTags, host) {
       align-items: center;
     }
     
-    /* ========================================
-       이미지 (확대/축소)와 비디오(고정) 분리
-       ======================================== */
-    /* 이미지 기본 스타일 */
+    /* 이미지 전용 스타일 (클릭 확대/축소) */
     #imageContainer img {
       width: 40vw;
       height: auto;
@@ -771,7 +768,7 @@ function renderHTML(mediaTags, host) {
       cursor: zoom-out;
     }
 
-    /* 비디오 기본 스타일 (확대/축소 제거) */
+    /* 비디오 전용 스타일 (커스텀 플레이어 작동, 클릭 확대 X) */
     #imageContainer video {
       width: 40vw;
       height: auto;
@@ -779,8 +776,9 @@ function renderHTML(mediaTags, host) {
       max-height: 50vh;
       display: block;
       margin: 20px auto;
-      transition: all 0.3s ease;
       object-fit: contain;
+      transition: all 0.3s ease;
+      /* cursor 없음 */
     }
 
     .container {
@@ -846,6 +844,7 @@ function renderHTML(mediaTags, host) {
       }
     }
   </style>
+  <!-- BLOUplayer 커스텀 플레이어 적용 -->
   <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
   <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
 </head>
@@ -861,15 +860,14 @@ function renderHTML(mediaTags, host) {
   <script>
     // 이미지만 확대/축소
     function toggleZoom(elem) {
-      // 비디오는 확대/축소 무시
+      // 비디오는 무시
       if (elem.tagName.toLowerCase() !== 'img') return;
 
       if (!elem.classList.contains('landscape') && !elem.classList.contains('portrait')) {
-        let width=0, height=0;
-        width = elem.naturalWidth;
-        height = elem.naturalHeight;
-        if(width && height){
-          if(width >= height) elem.classList.add('landscape');
+        let width = elem.naturalWidth;
+        let height = elem.naturalHeight;
+        if (width && height) {
+          if (width >= height) elem.classList.add('landscape');
           else elem.classList.add('portrait');
         }
       }
