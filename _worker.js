@@ -98,10 +98,10 @@ export default {
       let mediaTags = "";
       for (const { code, object } of objects) {
         if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
-          // 동영상 (controls 추가)
-          mediaTags += `<video src="https://${url.host}/${code}?raw=1" class="wrapped landscape" controls></video>\n`;
+          // 동영상
+          mediaTags += `<video src="https://${url.host}/${code}?raw=1" class="wrapped landscape"></video>\n`;
         } else {
-          // 이미지 (이미지 클릭 확대/축소 유지)
+          // 이미지
           mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
         }
       }
@@ -729,49 +729,7 @@ function renderHTML(mediaTags, host) {
       align-items: center;
     }
     
-    /* ========================================
-       이미지 (확대/축소)와 비디오(고정) 분리
-       ======================================== */
-    /* 이미지 기본 스타일 */
-    #imageContainer img {
-      width: 40vw;
-      height: auto;
-      max-width: 40vw;
-      max-height: 50vh;
-      display: block;
-      margin: 20px auto;
-      cursor: zoom-in;
-      transition: all 0.3s ease;
-      object-fit: contain;
-    }
-    #imageContainer img.landscape {
-      width: 40vw;
-      height: auto;
-      max-width: 40vw;
-      cursor: zoom-in;
-    }
-    #imageContainer img.portrait {
-      width: auto;
-      height: 50vh;
-      max-width: 40vw;
-      cursor: zoom-in;
-    }
-    #imageContainer img.expanded.landscape {
-      width: 80vw;
-      height: auto;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
-    }
-    #imageContainer img.expanded.portrait {
-      width: auto;
-      height: 100vh;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
-    }
-
-    /* 비디오 기본 스타일 (확대/축소 제거) */
+    #imageContainer img,
     #imageContainer video {
       width: 40vw;
       height: auto;
@@ -779,10 +737,46 @@ function renderHTML(mediaTags, host) {
       max-height: 50vh;
       display: block;
       margin: 20px auto;
+      cursor: pointer;
       transition: all 0.3s ease;
       object-fit: contain;
+      cursor: zoom-in;
     }
-
+  
+    #imageContainer img.landscape,
+    #imageContainer video.landscape {
+      width: 40vw;
+      height: auto;
+      max-width: 40vw;
+      cursor: zoom-in;
+    }
+  
+    #imageContainer img.portrait,
+    #imageContainer video.portrait {
+      width: auto;
+      height: 50vh;
+      max-width: 40vw;
+      cursor: zoom-in;
+    }
+  
+    #imageContainer img.expanded.landscape,
+    #imageContainer video.expanded.landscape {
+      width: 80vw;
+      height: auto;
+      max-width: 80vw;
+      max-height: 100vh;
+      cursor: zoom-out;
+    }
+  
+    #imageContainer img.expanded.portrait,
+    #imageContainer video.expanded.portrait {
+      width: auto;
+      height: 100vh;
+      max-width: 80vw;
+      max-height: 100vh;
+      cursor: zoom-out;
+    }
+  
     .container {
       text-align: center;
     }
@@ -847,6 +841,7 @@ function renderHTML(mediaTags, host) {
     }
   </style>
   <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
+  <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
 </head>
 <body>
   <div class="header-content">
@@ -858,28 +853,25 @@ function renderHTML(mediaTags, host) {
     ${mediaTags}
   </div>
   <script>
-    // 이미지만 확대/축소
     function toggleZoom(elem) {
-      // 비디오는 확대/축소 무시
-      if (elem.tagName.toLowerCase() !== 'img') return;
-
       if (!elem.classList.contains('landscape') && !elem.classList.contains('portrait')) {
         let width=0, height=0;
-        width = elem.naturalWidth;
-        height = elem.naturalHeight;
+        if (elem.tagName.toLowerCase()==='img') {
+          width=elem.naturalWidth; height=elem.naturalHeight;
+        } else if (elem.tagName.toLowerCase()==='video') {
+          width=elem.videoWidth; height=elem.videoHeight;
+        }
         if(width && height){
-          if(width >= height) elem.classList.add('landscape');
+          if(width>=height) elem.classList.add('landscape');
           else elem.classList.add('portrait');
         }
       }
       elem.classList.toggle('expanded');
     }
-
-    document.getElementById('toggleButton')?.addEventListener('click', function(){
+    document.getElementById('toggleButton')?.addEventListener('click',function(){
       window.location.href='/';
     });
   </script>
-    <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
 </body>
 </html>`;
 }
