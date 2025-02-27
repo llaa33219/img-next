@@ -858,6 +858,27 @@ function renderHTML(mediaTags, host) {
         width: 40vw;
         height: auto;
         }
+    /* Custom Context Menu Styles */
+    .custom-context-menu {
+      position: absolute;
+      background: white;
+      border: 1px solid #ccc;
+      padding: 5px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+      z-index: 1000;
+    }
+    .custom-context-menu button {
+      display: block;
+      width: 100%;
+      border: none;
+      background: none;
+      padding: 5px 10px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .custom-context-menu button:hover {
+      background: #eee;
+    }
   </style>
   <link rel="stylesheet" href="https://llaa33219.github.io/BLOUplayer/videoPlayer.css">
   <script src="https://llaa33219.github.io/BLOUplayer/videoPlayer.js"></script>
@@ -870,6 +891,12 @@ function renderHTML(mediaTags, host) {
   </div>
   <div id="imageContainer">
     ${mediaTags}
+  </div>
+  <div class="custom-context-menu" id="customContextMenu" style="display: none;">
+      <button id="copyImage">이미지 복사</button>
+      <button id="copyImageurl">이미지 링크 복사</button>
+      <button id="downloadImage">다운로드</button>
+      <button id="downloadImagepng">png로 다운로드</button>
   </div>
   <script>
     function toggleZoom(elem) {
@@ -889,6 +916,91 @@ function renderHTML(mediaTags, host) {
     }
     document.getElementById('toggleButton')?.addEventListener('click',function(){
       window.location.href='/';
+    });
+    
+    // Custom Context Menu Functionality
+    let currentImage = null;
+    const contextMenu = document.getElementById('customContextMenu');
+
+    document.getElementById('imageContainer').addEventListener('contextmenu', function(e) {
+        if(e.target.tagName.toLowerCase() === 'img'){
+            e.preventDefault();
+            currentImage = e.target;
+            contextMenu.style.top = e.pageY + 'px';
+            contextMenu.style.left = e.pageX + 'px';
+            contextMenu.style.display = 'block';
+        }
+    });
+
+    // Hide context menu on document click
+    document.addEventListener('click', function(e) {
+        if(contextMenu.style.display === 'block'){
+            contextMenu.style.display = 'none';
+        }
+    });
+
+    // "이미지 복사" 버튼 클릭
+    document.getElementById('copyImage').addEventListener('click', async function(){
+        if(currentImage){
+            try {
+                const response = await fetch(currentImage.src);
+                const blob = await response.blob();
+                await navigator.clipboard.write([
+                    new ClipboardItem({ [blob.type]: blob })
+                ]);
+                alert('이미지 복사됨');
+            } catch(err) {
+                alert('이미지 복사 실패: ' + err.message);
+            }
+        }
+    });
+
+    // "이미지 링크 복사" 버튼 클릭
+    document.getElementById('copyImageurl').addEventListener('click', async function(){
+        if(currentImage){
+            try {
+                await navigator.clipboard.writeText(currentImage.src);
+                alert('이미지 링크 복사됨');
+            } catch(err) {
+                alert('이미지 링크 복사 실패: ' + err.message);
+            }
+        }
+    });
+
+    // "다운로드" 버튼 클릭 (원본 이미지 다운로드)
+    document.getElementById('downloadImage').addEventListener('click', function(){
+        if(currentImage){
+            const a = document.createElement('a');
+            a.href = currentImage.src;
+            a.download = 'image';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
+    });
+
+    // "png로 다운로드" 버튼 클릭 (이미지를 png로 변환하여 다운로드)
+    document.getElementById('downloadImagepng').addEventListener('click', function(){
+        if(currentImage){
+            const canvas = document.createElement('canvas');
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.onload = function(){
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                canvas.toBlob(function(blob){
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = 'image.png';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                }, 'image/png');
+            };
+            img.src = currentImage.src;
+        }
     });
   </script>
 </body>
