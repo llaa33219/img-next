@@ -263,7 +263,7 @@
       display: none;
     }
 
-    /* 새로 추가된 커스텀 이름 관련 스타일 */
+    /* 수정된 커스텀 이름 관련 스타일 */
     .custom-name-option {
       display: flex;
       align-items: center;
@@ -315,9 +315,10 @@
       flex-direction: column;
       align-items: center;
       width: 100%;
+      margin-bottom: 10px;
     }
 
-          @media (max-width: 768px) {
+    @media (max-width: 768px) {
       button {
         width: 300px;
       }
@@ -362,7 +363,7 @@
       <input type="file" id="fileInput" accept="image/*,video/*" style="display: none;" multiple>
       <div id="fileNameDisplay">파일 선택 안됨</div>
       
-      <!-- 새로 추가된 커스텀 이름 옵션 -->
+      <!-- 수정된 커스텀 이름 옵션 -->
       <div class="custom-name-option">
         <input type="radio" id="defaultName" name="nameOption" value="default" checked>
         <label for="defaultName">기본 이름 사용</label>
@@ -389,6 +390,6 @@
       <button id="downloadImage">다운로드</button>
     </div>
   
-    <script type="module" src="script.min.js"></script>
+    <script src="script.min.js"></script>
   </body>
 </html>
