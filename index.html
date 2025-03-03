@@ -266,42 +266,79 @@
     /* 새로 추가된 커스텀 이름 관련 스타일 */
     .custom-name-option {
       display: flex;
+      justify-content: center;
       align-items: center;
+      width: 600px;
       margin: 10px 0;
+      background-color: #f8f9fa00;
+      border-radius: 20px;
+      padding: 15px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0);
     }
 
     .custom-name-option label {
-      margin-right: 15px;
-      font-size: 16px;
       display: flex;
       align-items: center;
+      margin: 0 15px;
+      font-size: 16px;
+      color: #333;
       cursor: pointer;
+      transition: color 0.3s ease;
     }
 
     .custom-name-option input[type="radio"] {
-      margin-right: 5px;
+      appearance: none;
+      -webkit-appearance: none;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid #007BFF;
+      outline: none;
+      margin-right: 10px;
+      position: relative;
       cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    .custom-name-option input[type="radio"]:checked {
+      background-color: #007BFF;
+      border-color: #007BFF;
+    }
+
+    .custom-name-option input[type="radio"]:checked::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 10px;
+      height: 10px;
+      background-color: white;
+      border-radius: 50%;
+    }
+
+    .custom-name-option input[type="radio"]:hover {
+      box-shadow: 0 0 0 4px rgba(0, 123, 255, 0.2);
     }
 
     #customNameInput {
+      width: 100%;
       padding: 10px;
+      margin-top: 15px;
+      border: 2px solid #007BFF;
       border-radius: 14px;
-      border: 1px solid #ccc;
-      width: 300px;
       font-size: 16px;
-      margin-top: 10px;
+      transition: all 0.3s ease;
       display: none;
+    }
+
+    #customNameInput:focus {
+      outline: none;
+      box-shadow: 0 0 0 4px rgba(0, 123, 255, 0.2);
     }
 
     #customNameInput.active {
       display: block;
-    }
-
-    .custom-name-container {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      width: 100%;
     }
 
     @media (max-width: 768px) {
@@ -320,15 +357,20 @@
       .title-img-mobile {
         display: block;
       }
-      #customNameInput {
-        width: 280px;
-      }
       .custom-name-option {
         flex-direction: column;
-        align-items: flex-start;
+        width: 300px;
+        padding: 15px;
       }
+
       .custom-name-option label {
-        margin-bottom: 10px;
+        margin: 10px 0;
+        width: 100%;
+        justify-content: center;
+      }
+
+      #customNameInput {
+        width: 280px;
       }
     }
     </style>
