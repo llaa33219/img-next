@@ -131,10 +131,7 @@ async function handleUpload(request, env) {
     return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
   }
 
-  // 사용자 지정 이름 유효성 검사
-  if (customName && !/^[A-Za-z0-9-]+$/.test(customName)) {
-    return new Response(JSON.stringify({ success: false, error: '사용자 지정 이름은 영문, 숫자, 하이픈(-)만 사용 가능합니다.' }), { status: 400 });
-  }
+  // 사용자 지정 이름 유효성 검사 제거 (모든 문자 허용)
 
   // 업로드 가능 파일 형식 제한: 검열 가능한 이미지 형식과 검열 가능한 영상 형식으로 제한
   const allowedImageTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
