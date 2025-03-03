@@ -69,15 +69,14 @@ export default {
     // =======================================
     // 2) [GET] /{코드} => R2 파일 or HTML
     // =======================================
-    // 이제 사용자 정의 이름 또는 기본 코드 둘 다 지원
-    else if (
-      request.method === 'GET' &&
-      (/^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname) || 
-       /^\/[A-Za-z0-9-]+$/.test(url.pathname))
-    ) {
+    // 다양한 문자와 언어를 지원하는 URL 패턴
+    else if (request.method === 'GET' && url.pathname.length > 1) {
+      const path = decodeURIComponent(url.pathname.slice(1));
+      const codes = path.split(",");
+
       // raw=1 이면 바이너리 원본
       if (url.searchParams.get('raw') === '1') {
-        const code = url.pathname.slice(1).split(",")[0];
+        const code = codes[0];
         const object = await env.IMAGES.get(code);
         if (!object) {
           return new Response('Not Found', { status: 404 });
@@ -88,7 +87,6 @@ export default {
       }
 
       // raw=1 아니면 HTML 페이지
-      const codes = url.pathname.slice(1).split(",");
       const objects = await Promise.all(
         codes.map(async code => {
           const object = await env.IMAGES.get(code);
@@ -99,11 +97,13 @@ export default {
       let mediaTags = "";
       for (const { code, object } of objects) {
         if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
-          // 동영상
-          mediaTags += `<video src="https://${url.host}/${code}?raw=1"></video>\n`;
+          // 동영상 - URL 인코딩 적용
+          const encodedCode = encodeURIComponent(code);
+          mediaTags += `<video src="https://${url.host}/${encodedCode}?raw=1"></video>\n`;
         } else {
-          // 이미지
-          mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+          // 이미지 - URL 인코딩 적용
+          const encodedCode = encodeURIComponent(code);
+          mediaTags += `<img src="https://${url.host}/${encodedCode}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
         }
       }
       const htmlContent = renderHTML(mediaTags, url.host);
@@ -131,9 +131,9 @@ async function handleUpload(request, env) {
     return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
   }
 
-  // 사용자 지정 이름 유효성 검사
-  if (customName && !/^[A-Za-z0-9-]+$/.test(customName)) {
-    return new Response(JSON.stringify({ success: false, error: '사용자 지정 이름은 영문, 숫자, 하이픈(-)만 사용 가능합니다.' }), { status: 400 });
+  // 사용자 지정 이름 유효성 검사 - 공백 문자만 체크
+  if (customName && customName.trim() === '') {
+    return new Response(JSON.stringify({ success: false, error: '이름은 최소 한 글자 이상이어야 합니다.' }), { status: 400 });
   }
 
   // 업로드 가능 파일 형식 제한: 검열 가능한 이미지 형식과 검열 가능한 영상 형식으로 제한
@@ -172,9 +172,11 @@ async function handleUpload(request, env) {
   let codes = [];
   
   // 사용자 지정 이름 처리
-  if (customName && files.length === 1) {
+  if (customName && customName.trim() && files.length === 1) {
+    const trimmedName = customName.trim();
+    
     // 이미 존재하는 이름인지 확인
-    const existingObject = await env.IMAGES.get(customName);
+    const existingObject = await env.IMAGES.get(trimmedName);
     if (existingObject) {
       return new Response(JSON.stringify({ 
         success: false, 
@@ -187,10 +189,10 @@ async function handleUpload(request, env) {
     const fileBuffer = await file.arrayBuffer();
     
     // R2에 업로드
-    await env.IMAGES.put(customName, fileBuffer, {
+    await env.IMAGES.put(trimmedName, fileBuffer, {
       httpMetadata: { contentType: file.type }
     });
-    codes.push(customName);
+    codes.push(trimmedName);
   } 
   // 기본 이름 사용 (자동 생성 코드)
   else {
@@ -206,7 +208,8 @@ async function handleUpload(request, env) {
     }
   }
   
-  const urlCodes = codes.join(",");
+  // URL 생성 시 각 코드를 인코딩
+  const urlCodes = codes.map(code => encodeURIComponent(code)).join(",");
   const host = request.headers.get('host') || 'example.com';
   const finalUrl = `https://${host}/${urlCodes}`; // => 예: https://도메인/AbCD1234 또는 커스텀이름
 
@@ -949,9 +952,6 @@ function renderHTML(mediaTags, host) {
       }
       elem.classList.toggle('expanded');
     }
-    document.getElementById('toggleButton')?.addEventListener('click',function(){
-      window.location.href='/';
-    });
     
     // Custom Context Menu Functionality
     let currentImage = null;

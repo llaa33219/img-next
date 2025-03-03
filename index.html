@@ -268,28 +268,41 @@
       display: flex;
       align-items: center;
       margin: 10px 0;
+      width: 600px;
     }
 
     .custom-name-option label {
-      margin-right: 15px;
+      flex: 1;
+      padding: 12px 20px;
       font-size: 16px;
-      display: flex;
-      align-items: center;
+      text-align: center;
+      background-color: #f0f0f0;
+      border-radius: 20px;
       cursor: pointer;
+      transition: all 0.3s ease;
+      color: #444;
+      margin: 0 5px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     }
 
     .custom-name-option input[type="radio"] {
-      margin-right: 5px;
-      cursor: pointer;
+      display: none;
+    }
+
+    .custom-name-option input[type="radio"]:checked + label {
+      background-color: #007BFF;
+      color: white;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
     }
 
     #customNameInput {
-      padding: 10px;
-      border-radius: 14px;
-      border: 1px solid #ccc;
-      width: 300px;
+      padding: 10px 20px;
+      border-radius: 20px;
+      border: 1px solid #ddd;
+      width: 600px;
       font-size: 16px;
       margin-top: 10px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
       display: none;
     }
 
@@ -304,7 +317,7 @@
       width: 100%;
     }
 
-    @media (max-width: 768px) {
+          @media (max-width: 768px) {
       button {
         width: 300px;
       }
@@ -320,15 +333,16 @@
       .title-img-mobile {
         display: block;
       }
-      #customNameInput {
-        width: 280px;
-      }
       .custom-name-option {
+        width: 300px;
         flex-direction: column;
-        align-items: flex-start;
       }
       .custom-name-option label {
-        margin-bottom: 10px;
+        margin: 5px 0;
+        width: 100%;
+      }
+      #customNameInput {
+        width: 300px;
       }
     }
     </style>
@@ -350,15 +364,13 @@
       
       <!-- 새로 추가된 커스텀 이름 옵션 -->
       <div class="custom-name-option">
-        <label>
-          <input type="radio" name="nameOption" value="default" checked> 기본 이름 사용 (자동 생성)
-        </label>
-        <label>
-          <input type="radio" name="nameOption" value="custom"> 사용자 지정 이름 사용
-        </label>
+        <input type="radio" id="defaultName" name="nameOption" value="default" checked>
+        <label for="defaultName">기본 이름 사용</label>
+        <input type="radio" id="customName" name="nameOption" value="custom">
+        <label for="customName">사용자 지정 이름</label>
       </div>
       <div class="custom-name-container">
-        <input type="text" id="customNameInput" placeholder="사용자 지정 이름 입력 (영문, 숫자, 하이픈(-) 사용 가능)">
+        <input type="text" id="customNameInput" placeholder="원하는 이름을 입력하세요 (모든 언어 지원)">
       </div>
       
       <button id="uploadButton">업로드</button>
