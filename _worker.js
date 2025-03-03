@@ -149,13 +149,11 @@ export default {
 async function handleUpload(request, env) {
   const formData = await request.formData();
   const files = formData.getAll('file');
-  const customName = formData.get('customName');
+  let customName = formData.get('customName');
   
   if (!files || files.length === 0) {
     return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
   }
-
-  // 사용자 지정 이름 유효성 검사 제거 (모든 문자 허용)
 
   // 업로드 가능 파일 형식 제한: 검열 가능한 이미지 형식과 검열 가능한 영상 형식으로 제한
   const allowedImageTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
@@ -194,6 +192,8 @@ async function handleUpload(request, env) {
   
   // 사용자 지정 이름 처리 (단일 파일일 때만 가능)
   if (customName && files.length === 1) {
+    // 스페이스는 언더스코어로 대체 (다른 커뮤니티에 URL 붙여넣어도 끊기지 않도록)
+    customName = customName.replace(/ /g, "_");
     // 이미 존재하는 이름인지 확인
     const existingObject = await env.IMAGES.get(customName);
     if (existingObject) {
