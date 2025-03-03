@@ -67,49 +67,68 @@ export default {
     }
 
     // =======================================
-    // 2) [GET] /{코드} => R2 파일 or HTML
+    // 2) [GET] /{코드 또는 커스텀 이름} => R2 파일 or HTML
     // =======================================
-    // 이제 사용자 정의 이름 또는 기본 코드 둘 다 지원
-    else if (
-      request.method === 'GET' &&
-      (/^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname) || 
-       /^\/[A-Za-z0-9-]+$/.test(url.pathname))
-    ) {
-      // raw=1 이면 바이너리 원본
-      if (url.searchParams.get('raw') === '1') {
-        const code = url.pathname.slice(1).split(",")[0];
-        const object = await env.IMAGES.get(code);
+    else if (request.method === 'GET' && url.pathname.length > 1) {
+      // URL 경로에 콤마(,)가 있으면 다중(자동 생성) 코드로 간주
+      if (url.pathname.indexOf(',') !== -1) {
+        const codes = url.pathname.slice(1).split(',').map(code => decodeURIComponent(code));
+        // raw=1 이면 첫번째 파일만 바이너리 원본 반환
+        if (url.searchParams.get('raw') === '1') {
+          const code = codes[0];
+          const object = await env.IMAGES.get(code);
+          if (!object) {
+            return new Response('Not Found', { status: 404 });
+          }
+          const headers = new Headers();
+          headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
+          return new Response(object.body, { headers });
+        }
+        // raw=1 아니면 HTML 페이지 반환
+        const objects = await Promise.all(
+          codes.map(async code => {
+            const object = await env.IMAGES.get(code);
+            return { code, object };
+          })
+        );
+
+        let mediaTags = "";
+        for (const { code, object } of objects) {
+          if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
+            mediaTags += `<video src="https://${url.host}/${encodeURIComponent(code)}?raw=1"></video>\n`;
+          } else {
+            mediaTags += `<img src="https://${url.host}/${encodeURIComponent(code)}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+          }
+        }
+        const htmlContent = renderHTML(mediaTags, url.host);
+        return new Response(htmlContent, {
+          headers: { "Content-Type": "text/html; charset=UTF-8" }
+        });
+      }
+      // 콤마가 없으면 단일 파일(커스텀 이름)으로 간주
+      else {
+        const key = decodeURIComponent(url.pathname.slice(1));
+        const object = await env.IMAGES.get(key);
         if (!object) {
           return new Response('Not Found', { status: 404 });
         }
-        const headers = new Headers();
-        headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
-        return new Response(object.body, { headers });
-      }
-
-      // raw=1 아니면 HTML 페이지
-      const codes = url.pathname.slice(1).split(",");
-      const objects = await Promise.all(
-        codes.map(async code => {
-          const object = await env.IMAGES.get(code);
-          return { code, object };
-        })
-      );
-
-      let mediaTags = "";
-      for (const { code, object } of objects) {
-        if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
-          // 동영상
-          mediaTags += `<video src="https://${url.host}/${code}?raw=1"></video>\n`;
+        if (url.searchParams.get('raw') === '1') {
+          const headers = new Headers();
+          headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
+          return new Response(object.body, { headers });
         } else {
-          // 이미지
-          mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+          let mediaTag = "";
+          if (object.httpMetadata?.contentType?.startsWith('video/')) {
+            mediaTag = `<video src="https://${url.host}/${encodeURIComponent(key)}?raw=1"></video>\n`;
+          } else {
+            mediaTag = `<img src="https://${url.host}/${encodeURIComponent(key)}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+          }
+          const htmlContent = renderHTML(mediaTag, url.host);
+          return new Response(htmlContent, {
+            headers: { "Content-Type": "text/html; charset=UTF-8" }
+          });
         }
       }
-      const htmlContent = renderHTML(mediaTags, url.host);
-      return new Response(htmlContent, {
-        headers: { "Content-Type": "text/html; charset=UTF-8" }
-      });
     }
 
     // =======================================
@@ -168,7 +187,7 @@ async function handleUpload(request, env) {
   // =========================
   let codes = [];
   
-  // 사용자 지정 이름 처리
+  // 사용자 지정 이름 처리 (단일 파일일 때만 가능)
   if (customName && files.length === 1) {
     // 이미 존재하는 이름인지 확인
     const existingObject = await env.IMAGES.get(customName);
@@ -183,7 +202,7 @@ async function handleUpload(request, env) {
     const file = files[0];
     const fileBuffer = await file.arrayBuffer();
     
-    // R2에 업로드
+    // R2에 업로드 (키는 customName 그대로 사용)
     await env.IMAGES.put(customName, fileBuffer, {
       httpMetadata: { contentType: file.type }
     });
@@ -203,9 +222,9 @@ async function handleUpload(request, env) {
     }
   }
   
-  const urlCodes = codes.join(",");
   const host = request.headers.get('host') || 'example.com';
-  const finalUrl = `https://${host}/${urlCodes}`; // => 예: https://도메인/AbCD1234 또는 커스텀이름
+  // URL에 customName이나 자동 생성 코드를 사용할 때는 반드시 인코딩 처리
+  const finalUrl = `https://${host}/${codes.map(encodeURIComponent).join(",")}`;
 
   console.log(">>> 업로드 완료 =>", finalUrl);
 
