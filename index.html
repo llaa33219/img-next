@@ -263,6 +263,47 @@
       display: none;
     }
 
+    /* 새로 추가된 커스텀 이름 관련 스타일 */
+    .custom-name-option {
+      display: flex;
+      align-items: center;
+      margin: 10px 0;
+    }
+
+    .custom-name-option label {
+      margin-right: 15px;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+    }
+
+    .custom-name-option input[type="radio"] {
+      margin-right: 5px;
+      cursor: pointer;
+    }
+
+    #customNameInput {
+      padding: 10px;
+      border-radius: 14px;
+      border: 1px solid #ccc;
+      width: 300px;
+      font-size: 16px;
+      margin-top: 10px;
+      display: none;
+    }
+
+    #customNameInput.active {
+      display: block;
+    }
+
+    .custom-name-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+    }
+
     @media (max-width: 768px) {
       button {
         width: 300px;
@@ -278,6 +319,16 @@
       }
       .title-img-mobile {
         display: block;
+      }
+      #customNameInput {
+        width: 280px;
+      }
+      .custom-name-option {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .custom-name-option label {
+        margin-bottom: 10px;
       }
     }
     </style>
@@ -296,6 +347,20 @@
       <button id="fileSelectButton">파일 선택(이미지 및 영상)</button>
       <input type="file" id="fileInput" accept="image/*,video/*" style="display: none;" multiple>
       <div id="fileNameDisplay">파일 선택 안됨</div>
+      
+      <!-- 새로 추가된 커스텀 이름 옵션 -->
+      <div class="custom-name-option">
+        <label>
+          <input type="radio" name="nameOption" value="default" checked> 기본 이름 사용 (자동 생성)
+        </label>
+        <label>
+          <input type="radio" name="nameOption" value="custom"> 사용자 지정 이름 사용
+        </label>
+      </div>
+      <div class="custom-name-container">
+        <input type="text" id="customNameInput" placeholder="사용자 지정 이름 입력 (영문, 숫자, 하이픈(-) 사용 가능)">
+      </div>
+      
       <button id="uploadButton">업로드</button>
       <p id="status"></p>
       <div class="link-container">

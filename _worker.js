@@ -69,10 +69,11 @@ export default {
     // =======================================
     // 2) [GET] /{코드} => R2 파일 or HTML
     // =======================================
-    // 예: /AbCD1234,xyzXYZ12
+    // 이제 사용자 정의 이름 또는 기본 코드 둘 다 지원
     else if (
       request.method === 'GET' &&
-      /^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname)
+      (/^\/[A-Za-z0-9,]{8,}(,[A-Za-z0-9]{8})*$/.test(url.pathname) || 
+       /^\/[A-Za-z0-9-]+$/.test(url.pathname))
     ) {
       // raw=1 이면 바이너리 원본
       if (url.searchParams.get('raw') === '1') {
@@ -124,8 +125,15 @@ export default {
 async function handleUpload(request, env) {
   const formData = await request.formData();
   const files = formData.getAll('file');
+  const customName = formData.get('customName');
+  
   if (!files || files.length === 0) {
     return new Response(JSON.stringify({ success: false, error: '파일이 제공되지 않았습니다.' }), { status: 400 });
+  }
+
+  // 사용자 지정 이름 유효성 검사
+  if (customName && !/^[A-Za-z0-9-]+$/.test(customName)) {
+    return new Response(JSON.stringify({ success: false, error: '사용자 지정 이름은 영문, 숫자, 하이픈(-)만 사용 가능합니다.' }), { status: 400 });
   }
 
   // 업로드 가능 파일 형식 제한: 검열 가능한 이미지 형식과 검열 가능한 영상 형식으로 제한
@@ -162,19 +170,45 @@ async function handleUpload(request, env) {
   // 2) R2 업로드 (검열 통과만 저장)
   // =========================
   let codes = [];
-  for (const file of files) {
-    const code = await generateUniqueCode(env);
+  
+  // 사용자 지정 이름 처리
+  if (customName && files.length === 1) {
+    // 이미 존재하는 이름인지 확인
+    const existingObject = await env.IMAGES.get(customName);
+    if (existingObject) {
+      return new Response(JSON.stringify({ 
+        success: false, 
+        error: '이미 사용 중인 이름입니다. 다른 이름을 선택해주세요.' 
+      }), { status: 400 });
+    }
+    
+    // 파일 저장 (단일 파일)
+    const file = files[0];
     const fileBuffer = await file.arrayBuffer();
-
+    
     // R2에 업로드
-    await env.IMAGES.put(code, fileBuffer, {
+    await env.IMAGES.put(customName, fileBuffer, {
       httpMetadata: { contentType: file.type }
     });
-    codes.push(code);
+    codes.push(customName);
+  } 
+  // 기본 이름 사용 (자동 생성 코드)
+  else {
+    for (const file of files) {
+      const code = await generateUniqueCode(env);
+      const fileBuffer = await file.arrayBuffer();
+
+      // R2에 업로드
+      await env.IMAGES.put(code, fileBuffer, {
+        httpMetadata: { contentType: file.type }
+      });
+      codes.push(code);
+    }
   }
+  
   const urlCodes = codes.join(",");
   const host = request.headers.get('host') || 'example.com';
-  const finalUrl = `https://${host}/${urlCodes}`; // => 예: https://도메인/AbCD1234
+  const finalUrl = `https://${host}/${urlCodes}`; // => 예: https://도메인/AbCD1234 또는 커스텀이름
 
   console.log(">>> 업로드 완료 =>", finalUrl);
 
@@ -659,7 +693,7 @@ function arrayBufferToBase64(buffer) {
 // 최종 HTML 렌더
 // =======================
 function renderHTML(mediaTags, host) {
-  // 간단히 이미지/영상만 보여주는 페이지 예시
+  // 이미지/영상을 보여주는 페이지
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
