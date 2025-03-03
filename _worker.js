@@ -70,6 +70,11 @@ export default {
     // 2) [GET] /{코드 또는 커스텀 이름} => R2 파일 or HTML
     // =======================================
     else if (request.method === 'GET' && url.pathname.length > 1) {
+      // 만약 요청 경로에 '.'가 포함되어 있다면, 이는 정적 에셋(예: script.min.js, _worker.js 등)이므로 ASSETS에서 제공
+      if (url.pathname.includes('.')) {
+        return env.ASSETS.fetch(request);
+      }
+      
       // URL 경로에 콤마(,)가 있으면 다중(자동 생성) 코드로 간주
       if (url.pathname.indexOf(',') !== -1) {
         const codes = url.pathname.slice(1).split(',').map(code => decodeURIComponent(code));
