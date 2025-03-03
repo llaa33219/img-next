@@ -100,9 +100,9 @@ export default {
         let mediaTags = "";
         for (const { code, object } of objects) {
           if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
-            mediaTags += `<video src="https://${url.host}/${encodeURIComponent(code)}?raw=1"></video>\n`;
+            mediaTags += `<video src="https://${url.host}/${code}?raw=1"></video>\n`;
           } else {
-            mediaTags += `<img src="https://${url.host}/${encodeURIComponent(code)}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
           }
         }
         const htmlContent = renderHTML(mediaTags, url.host);
@@ -124,9 +124,9 @@ export default {
         } else {
           let mediaTag = "";
           if (object.httpMetadata?.contentType?.startsWith('video/')) {
-            mediaTag = `<video src="https://${url.host}/${encodeURIComponent(key)}?raw=1"></video>\n`;
+            mediaTag = `<video src="https://${url.host}/${key}?raw=1"></video>\n`;
           } else {
-            mediaTag = `<img src="https://${url.host}/${encodeURIComponent(key)}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+            mediaTag = `<img src="https://${url.host}/${key}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
           }
           const htmlContent = renderHTML(mediaTag, url.host);
           return new Response(htmlContent, {
@@ -228,8 +228,8 @@ async function handleUpload(request, env) {
   }
   
   const host = request.headers.get('host') || 'example.com';
-  // URL에 customName이나 자동 생성 코드를 사용할 때는 반드시 인코딩 처리
-  const finalUrl = `https://${host}/${codes.map(encodeURIComponent).join(",")}`;
+  // URL에 customName이나 자동 생성 코드를 사용할 때 encodeURIComponent 처리 없이 원본 그대로 사용
+  const finalUrl = `https://${host}/${codes.join(",")}`;
 
   console.log(">>> 업로드 완료 =>", finalUrl);
 
