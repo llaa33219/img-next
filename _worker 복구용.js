@@ -3,18 +3,51 @@
 // ==============================
 const requestsInProgress = {};
 
+// CORS 헤더 추가 함수
+function addCorsHeaders(response) {
+  const headers = new Headers(response.headers);
+  headers.set('Access-Control-Allow-Origin', '*');
+  headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  headers.set('Access-Control-Allow-Headers', 'Content-Type');
+  headers.set('Access-Control-Max-Age', '86400');
+  
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/$/, '');
 
-    // 1) [POST] /upload 또는 /upload/ => 업로드 처리
+    // OPTIONS 요청 처리 (CORS preflight)
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Max-Age': '86400'
+        }
+      });
+    }
+
+    // 1) [POST] /upload 또는 /upload/ => 업로드 처리 (웹 인터페이스)
     if (request.method === 'POST' && path === '/upload') {
+      // 요청이 웹 인터페이스에서 왔는지 외부에서 왔는지 확인
+      const isExternalRequest = request.headers.get('Origin') && 
+                               !request.headers.get('Origin').includes(url.host);
+      
       const cfReqId = request.headers.get('Cf-Request-Id') || '';
       if (cfReqId) {
         if (requestsInProgress[cfReqId]) {
           console.log(`[Dedup] 중복 요청 감지 => Cf-Request-Id=${cfReqId}. 기존 Promise 공유.`);
-          return requestsInProgress[cfReqId].promise;
+          const response = await requestsInProgress[cfReqId].promise;
+          return isExternalRequest ? addCorsHeaders(response) : response;
         } else {
           let resolveFn, rejectFn;
           const promise = new Promise((resolve, reject) => {
@@ -40,14 +73,28 @@ export default {
             requestsInProgress[cfReqId].reject(failResp);
             finalResp = failResp;
           }
-          return finalResp;
+          return isExternalRequest ? addCorsHeaders(finalResp) : finalResp;
         }
       } else {
-        return handleUpload(request, env);
+        const response = await handleUpload(request, env);
+        return isExternalRequest ? addCorsHeaders(response) : response;
       }
     }
 
-    // 2) [GET] /{코드 또는 커스텀 이름} => R2 파일 or HTML
+    // 2) [POST] /api/upload => API 전용 업로드 엔드포인트 (외부용)
+    else if (request.method === 'POST' && path === '/api/upload') {
+      const response = await handleUpload(request, env);
+      return addCorsHeaders(response);
+    }
+
+    // 3) [GET] /api => API 문서 제공
+    else if (request.method === 'GET' && path === '/api') {
+      return new Response(renderApiDocs(url.host), {
+        headers: { 'Content-Type': 'text/html; charset=UTF-8' }
+      });
+    }
+
+    // 4) [GET] /{코드 또는 커스텀 이름} => R2 파일 or HTML
     else if (request.method === 'GET' && url.pathname.length > 1) {
       if (url.pathname.includes('.')) {
         return env.ASSETS.fetch(request);
@@ -98,7 +145,7 @@ export default {
       }
     }
 
-    // 3) 그 외 => 기본 정적 에셋
+    // 5) 그 외 => 기본 정적 에셋
     return env.ASSETS.fetch(request);
   }
 };
@@ -181,9 +228,17 @@ async function handleUpload(request, env) {
 
   const host = request.headers.get('host') || 'example.com';
   const finalUrl = `https://${host}/${codes.join(",")}`;
+  const rawUrls = codes.map(code => `https://${host}/${code}?raw=1`);
   console.log(">>> 업로드 완료 =>", finalUrl);
 
-  return new Response(JSON.stringify({ success: true, url: finalUrl }), {
+  // API 응답에 추가 정보 포함
+  return new Response(JSON.stringify({ 
+    success: true, 
+    url: finalUrl,
+    rawUrls: rawUrls,
+    codes: codes,
+    fileTypes: files.map(file => file.type)
+  }), {
     headers: { 'Content-Type': 'application/json' }
   });
 }
@@ -852,6 +907,225 @@ function renderHTML(mediaTags, host) {
         }
     });
   </script>
+</body>
+</html>`;
+}
+
+// API 문서 HTML 렌더링
+function renderApiDocs(host) {
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="https://i.imgur.com/2MkyDCh.png" type="image/png">
+  <title>이미지 공유 API 문서</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      line-height: 1.6;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      color: #333;
+    }
+    h1, h2, h3 {
+      color: #0066cc;
+    }
+    .endpoint {
+      background-color: #f5f5f5;
+      border-left: 4px solid #0066cc;
+      padding: 10px;
+      margin: 20px 0;
+    }
+    code {
+      background-color: #f0f0f0;
+      padding: 2px 5px;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    pre {
+      background-color: #f0f0f0;
+      padding: 15px;
+      border-radius: 5px;
+      overflow-x: auto;
+      font-family: 'Courier New', monospace;
+    }
+    .method {
+      font-weight: bold;
+      color: #ffffff;
+      border-radius: 3px;
+      padding: 2px 5px;
+      margin-right: 5px;
+    }
+    .get {
+      background-color: #61affe;
+    }
+    .post {
+      background-color: #49cc90;
+    }
+    .delete {
+      background-color: #f93e3e;
+    }
+    .put {
+      background-color: #fca130;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 10px;
+      text-align: left;
+    }
+    th {
+      background-color: #f0f0f0;
+    }
+    .example {
+      margin-top: 20px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .header img {
+      width: 60px;
+      height: auto;
+      margin-right: 15px;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="https://i.imgur.com/2MkyDCh.png" alt="Logo">
+    <h1>이미지 공유 API 문서</h1>
+  </div>
+  
+  <p>이 API는 외부 애플리케이션에서 이미지 및 동영상을 업로드하고 공유할 수 있는 기능을 제공합니다. 모든 콘텐츠는 업로드 전 자동 검열됩니다.</p>
+  
+  <h2>엔드포인트</h2>
+  
+  <div class="endpoint">
+    <h3><span class="method post">POST</span> /api/upload</h3>
+    <p>이미지 또는 동영상 파일을 업로드합니다. 모든 파일은 자동으로 부적절한 콘텐츠 검열을 거칩니다.</p>
+    
+    <h4>요청 형식</h4>
+    <p>요청은 <code>multipart/form-data</code> 형식이어야 합니다.</p>
+    
+    <table>
+      <tr>
+        <th>파라미터</th>
+        <th>타입</th>
+        <th>필수</th>
+        <th>설명</th>
+      </tr>
+      <tr>
+        <td>file</td>
+        <td>File</td>
+        <td>예</td>
+        <td>업로드할 이미지 또는 동영상 파일. 여러 파일 업로드 가능.</td>
+      </tr>
+      <tr>
+        <td>customName</td>
+        <td>String</td>
+        <td>아니오</td>
+        <td>사용자 지정 파일 이름 (단일 파일 업로드 시에만 유효).</td>
+      </tr>
+    </table>
+    
+    <h4>지원 파일 형식</h4>
+    <ul>
+      <li>이미지: JPEG, PNG, GIF, WEBP</li>
+      <li>동영상: MP4, WEBM, OGG, AVI</li>
+    </ul>
+    
+    <h4>응답</h4>
+    <p>성공 시 응답 (200 OK):</p>
+    <pre>{
+  "success": true,
+  "url": "https://${host}/ABC123",
+  "rawUrls": ["https://${host}/ABC123?raw=1"],
+  "codes": ["ABC123"],
+  "fileTypes": ["image/jpeg"]
+}</pre>
+    
+    <p>파일 형식 오류 (400 Bad Request):</p>
+    <pre>{
+  "success": false,
+  "error": "지원하지 않는 파일 형식입니다."
+}</pre>
+    
+    <p>검열 실패 (400 Bad Request):</p>
+    <pre>{
+  "success": false,
+  "error": "검열됨: 선정적 콘텐츠, 폭력/무기 콘텐츠"
+}</pre>
+    
+    <p>서버 오류 (500 Internal Server Error):</p>
+    <pre>{
+  "success": false,
+  "error": "검열 처리 중 오류: [오류 메시지]"
+}</pre>
+  </div>
+  
+  <h2>코드 예제</h2>
+  
+  <div class="example">
+    <h3>cURL</h3>
+    <pre>curl -X POST https://${host}/api/upload \
+  -F "file=@/path/to/image.jpg"</pre>
+  </div>
+  
+  <div class="example">
+    <h3>JavaScript (fetch)</h3>
+    <pre>const formData = new FormData();
+formData.append('file', fileInput.files[0]);
+
+fetch('https://${host}/api/upload', {
+  method: 'POST',
+  body: formData
+})
+.then(response => response.json())
+.then(data => {
+  if (data.success) {
+    console.log('업로드 성공:', data.url);
+  } else {
+    console.error('업로드 실패:', data.error);
+  }
+})
+.catch(error => {
+  console.error('요청 오류:', error);
+});</pre>
+  </div>
+  
+  <div class="example">
+    <h3>Python (requests)</h3>
+    <pre>import requests
+
+url = 'https://${host}/api/upload'
+files = {'file': open('image.jpg', 'rb')}
+
+response = requests.post(url, files=files)
+data = response.json()
+
+if data['success']:
+    print('업로드 성공:', data['url'])
+else:
+    print('업로드 실패:', data['error'])</pre>
+  </div>
+  
+  <h2>노트</h2>
+  <ul>
+    <li>모든 업로드된 파일은 자동 검열 시스템을 통과해야 합니다.</li>
+    <li>대용량 파일 업로드 시 서버 처리 시간이 길어질 수 있습니다.</li>
+    <li>기본적으로 랜덤 코드가 생성되지만, <code>customName</code> 파라미터를 통해 사용자 지정 이름을 부여할 수 있습니다.</li>
+    <li>동일한 사용자 지정 이름이 이미 존재하는 경우 업로드가 실패합니다.</li>
+    <li>외부 도메인에서 API 요청 시 CORS 헤더가 자동으로 추가됩니다.</li>
+  </ul>
 </body>
 </html>`;
 }
