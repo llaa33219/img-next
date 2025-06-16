@@ -3,6 +3,111 @@
 // ==============================
 const requestsInProgress = {};
 
+// ==============================
+// 전역: 레이트 리미팅 관리 Map
+// ==============================
+const rateLimitData = new Map(); // IP별 요청 기록
+const blockedIPs = new Map(); // 차단된 IP와 해제 시간
+
+// 레이트 리미팅 검사 함수
+function checkRateLimit(clientIP) {
+  const now = Date.now();
+  
+  // 차단된 IP 확인
+  if (blockedIPs.has(clientIP)) {
+    const blockInfo = blockedIPs.get(clientIP);
+    if (now < blockInfo.unblockTime) {
+      const remainingTime = Math.ceil((blockInfo.unblockTime - now) / 1000);
+      return {
+        blocked: true,
+        reason: blockInfo.reason,
+        remainingTime: remainingTime
+      };
+    } else {
+      // 차단 시간이 지났으므로 해제
+      blockedIPs.delete(clientIP);
+    }
+  }
+  
+  // 현재 IP의 요청 기록 가져오기 또는 생성
+  if (!rateLimitData.has(clientIP)) {
+    rateLimitData.set(clientIP, {
+      requests: [],
+      lastCleanup: now
+    });
+  }
+  
+  const ipData = rateLimitData.get(clientIP);
+  
+  // 오래된 요청 기록 정리 (1시간 이상 된 것)
+  if (now - ipData.lastCleanup > 60000) { // 1분마다 정리
+    ipData.requests = ipData.requests.filter(time => now - time < 3600000); // 1시간
+    ipData.lastCleanup = now;
+  }
+  
+  // 현재 요청 추가
+  ipData.requests.push(now);
+  
+  // 1분 내 요청 수 확인 (20개 초과시 5분 차단)
+  const oneMinuteAgo = now - 60000;
+  const recentRequests = ipData.requests.filter(time => time > oneMinuteAgo);
+  
+  if (recentRequests.length > 20) {
+    const unblockTime = now + (5 * 60 * 1000); // 5분 후
+    blockedIPs.set(clientIP, {
+      unblockTime: unblockTime,
+      reason: '1분 내 20개 초과 업로드'
+    });
+    return {
+      blocked: true,
+      reason: '1분 내 20개 초과 업로드로 인한 5분 차단',
+      remainingTime: 300
+    };
+  }
+  
+  // 1시간 내 요청 수 확인 (100개 초과시 1시간 차단)
+  const oneHourAgo = now - 3600000;
+  const hourlyRequests = ipData.requests.filter(time => time > oneHourAgo);
+  
+  if (hourlyRequests.length > 100) {
+    const unblockTime = now + (60 * 60 * 1000); // 1시간 후
+    blockedIPs.set(clientIP, {
+      unblockTime: unblockTime,
+      reason: '1시간 내 100개 초과 업로드'
+    });
+    return {
+      blocked: true,
+      reason: '1시간 내 100개 초과 업로드로 인한 1시간 차단',
+      remainingTime: 3600
+    };
+  }
+  
+  return { blocked: false };
+}
+
+// 메모리 정리 함수 (주기적으로 호출)
+function cleanupOldData() {
+  const now = Date.now();
+  const oneHourAgo = now - 3600000;
+  
+  // 오래된 요청 기록 정리
+  for (const [ip, data] of rateLimitData.entries()) {
+    data.requests = data.requests.filter(time => time > oneHourAgo);
+    if (data.requests.length === 0) {
+      rateLimitData.delete(ip);
+    }
+  }
+  
+  // 만료된 차단 기록 정리
+  for (const [ip, blockInfo] of blockedIPs.entries()) {
+    if (now >= blockInfo.unblockTime) {
+      blockedIPs.delete(ip);
+    }
+  }
+  
+  console.log(`[Cleanup] 레이트 리미팅 데이터 정리 완료. 활성 IP: ${rateLimitData.size}, 차단된 IP: ${blockedIPs.size}`);
+}
+
 // CORS 헤더 추가 함수
 function addCorsHeaders(response) {
   const headers = new Headers(response.headers);
@@ -20,6 +125,13 @@ function addCorsHeaders(response) {
 
 export default {
   async fetch(request, env, ctx) {
+    // 주기적으로 메모리 정리 (10분마다)
+    const now = Date.now();
+    if (!this.lastCleanup || now - this.lastCleanup > 600000) {
+      ctx.waitUntil(Promise.resolve().then(() => cleanupOldData()));
+      this.lastCleanup = now;
+    }
+    
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/$/, '');
 
@@ -38,6 +150,27 @@ export default {
 
     // 1) [POST] /upload 또는 /upload/ => 업로드 처리 (웹 인터페이스)
     if (request.method === 'POST' && path === '/upload') {
+      // 클라이언트 IP 가져오기
+      const clientIP = request.headers.get('CF-Connecting-IP') || 
+                      request.headers.get('X-Forwarded-For') || 
+                      request.headers.get('X-Real-IP') || 
+                      'unknown';
+      
+      // 레이트 리미팅 검사
+      const rateLimitResult = checkRateLimit(clientIP);
+      if (rateLimitResult.blocked) {
+        console.log(`[Rate Limit] IP ${clientIP} 차단됨: ${rateLimitResult.reason}`);
+        return new Response(JSON.stringify({
+          success: false,
+          error: `보안상 업로드가 제한되었습니다. ${rateLimitResult.reason}. ${rateLimitResult.remainingTime}초 후 다시 시도하세요.`,
+          rateLimited: true,
+          remainingTime: rateLimitResult.remainingTime
+        }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      
       // 요청이 웹 인터페이스에서 왔는지 외부에서 왔는지 확인
       const isExternalRequest = request.headers.get('Origin') && 
                                !request.headers.get('Origin').includes(url.host);
@@ -83,6 +216,28 @@ export default {
 
     // 2) [POST] /api/upload => API 전용 업로드 엔드포인트 (외부용)
     else if (request.method === 'POST' && path === '/api/upload') {
+      // 클라이언트 IP 가져오기
+      const clientIP = request.headers.get('CF-Connecting-IP') || 
+                      request.headers.get('X-Forwarded-For') || 
+                      request.headers.get('X-Real-IP') || 
+                      'unknown';
+      
+      // 레이트 리미팅 검사
+      const rateLimitResult = checkRateLimit(clientIP);
+      if (rateLimitResult.blocked) {
+        console.log(`[Rate Limit] API IP ${clientIP} 차단됨: ${rateLimitResult.reason}`);
+        const response = new Response(JSON.stringify({
+          success: false,
+          error: `보안상 업로드가 제한되었습니다. ${rateLimitResult.reason}. ${rateLimitResult.remainingTime}초 후 다시 시도하세요.`,
+          rateLimited: true,
+          remainingTime: rateLimitResult.remainingTime
+        }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' }
+        });
+        return addCorsHeaders(response);
+      }
+      
       const response = await handleUpload(request, env);
       return addCorsHeaders(response);
     }
@@ -276,13 +431,13 @@ async function handleImageCensorship(file, env) {
       contents: [{
         parts: [
           { text:
-            "이 비디오에 부적절한 콘텐츠가 포함되어 있는지 확인해주세요. 다음 카테고리에 해당하는 내용이 있으면 true/false로 알려주세요:\n" +
-            "1. 노출/선정적 이미지\n2. 폭력/무기\n3. 약물/알코올\n4. 욕설/혐오 표현\n5. 기타 유해 콘텐츠\n\n발견 시 간단히 설명해주세요. **추가 설명 금지**:\n" +
-            "1. true/false\n" +
-            "2. true/false\n" +
-            "3. true/false\n" +
-            "4. true/false\n" +
-            "5. true/false\n",
+            "이 이미지에 부적절한 콘텐츠가 포함되어 있는지 확인해주세요. 각 카테고리별로 true 또는 false로만 답변해주세요:\n\n" +
+            "1. 노출/선정적 이미지: true/false\n" +
+            "2. 폭력/무기: true/false\n" +
+            "3. 약물/알코올: true/false\n" +
+            "4. 욕설/혐오 표현: true/false\n" +
+            "5. 기타 유해 콘텐츠: true/false\n\n" +
+            "각 줄에 숫자와 true/false만 답변하세요. 추가 설명은 하지 마세요."
            },
           { inlineData: { mimeType: file.type, data: imageBase64 } }
         ]
@@ -420,13 +575,13 @@ async function handleVideoCensorship(file, env) {
       contents: [{
         parts: [
           { text:
-              "이 비디오에 부적절한 콘텐츠가 포함되어 있는지 확인해주세요. 다음 카테고리에 해당하는 내용이 있으면 true/false로 알려주세요:\n" +
-              "1. 노출/선정적 이미지\n2. 폭력/무기\n3. 약물/알코올\n4. 욕설/혐오 표현\n5. 기타 유해 콘텐츠\n\n발견 시 간단히 설명해주세요. **추가 설명 금지**:\n" +
-              "1. true/false\n" +
-              "2. true/false\n" +
-              "3. true/false\n" +
-              "4. true/false\n" +
-              "5. true/false\n",
+              "이 비디오에 부적절한 콘텐츠가 포함되어 있는지 확인해주세요. 각 카테고리별로 true 또는 false로만 답변해주세요:\n\n" +
+              "1. 노출/선정적 이미지: true/false\n" +
+              "2. 폭력/무기: true/false\n" +
+              "3. 약물/알코올: true/false\n" +
+              "4. 욕설/혐오 표현: true/false\n" +
+              "5. 기타 유해 콘텐츠: true/false\n\n" +
+              "각 줄에 숫자와 true/false만 답변하세요. 추가 설명은 하지 마세요."
              },
           { file_data: { mime_type: file.type, file_uri: fileUri } }
         ]
@@ -471,12 +626,29 @@ async function callGeminiAPI(apiKey, requestBody) {
           await new Promise(r => setTimeout(r, retryDelay));
           continue;
         }
+        console.log('Gemini API 호출 실패:', {
+          status: response.status,
+          statusText: response.statusText,
+          headers: Object.fromEntries([...response.headers])
+        });
         const errText = await response.text();
-        return { success: false, error: `API 오류 (${response.status}): ${errText}` };
+        return { success: false, error: `API 오류 (${response.status}): ${response.statusText}` };
       }
       const data = await response.json();
       const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!content) return { success: false, error: '유효하지 않은 Gemini API 응답' };
+      if (!content) {
+        // 안전한 디버깅 정보만 로그
+        console.log('Gemini API 응답 상태:', {
+          hasCandidates: !!data.candidates,
+          candidatesLength: data.candidates?.length || 0,
+          hasContent: !!data.candidates?.[0]?.content,
+          hasParts: !!data.candidates?.[0]?.content?.parts,
+          partsLength: data.candidates?.[0]?.content?.parts?.length || 0,
+          hasText: !!data.candidates?.[0]?.content?.parts?.[0]?.text,
+          responseKeys: Object.keys(data || {})
+        });
+        return { success: false, error: 'Gemini API에서 유효한 응답을 받지 못했습니다. API 키 또는 요청 형식을 확인해주세요.' };
+      }
       return { success: true, text: content };
     } catch (e) {
       retryCount++;
@@ -507,9 +679,29 @@ function isInappropriateContent(responseText) {
   // 결과 저장소
   const flagged = [];
 
-  // 응답을 줄별로 순회하며 "숫자. true/false" 패턴만 파싱
+  // 응답을 줄별로 순회하며 다양한 패턴 파싱
   responseText.split(/\r?\n/).forEach(line => {
-    const m = line.match(/^\s*([1-5])\.\s*(true|false)\b/i);
+    // 패턴 1: "숫자. true/false" 형태
+    let m = line.match(/^\s*([1-5])\.\s*(true|false)\b/i);
+    if (!m) {
+      // 패턴 2: "숫자: true/false" 형태
+      m = line.match(/^\s*([1-5]):\s*(true|false)\b/i);
+    }
+    if (!m) {
+      // 패턴 3: "숫자 - true/false" 형태
+      m = line.match(/^\s*([1-5])\s*[-–]\s*(true|false)\b/i);
+    }
+    if (!m) {
+      // 패턴 4: 단순히 "true" 또는 "false"만 있는 경우 (순서대로 1-5 매핑)
+      const trueMatch = line.match(/^\s*(true|false)\b/i);
+      if (trueMatch) {
+        const lineIndex = responseText.split(/\r?\n/).indexOf(line);
+        if (lineIndex >= 0 && lineIndex < 5) {
+          m = [null, (lineIndex + 1).toString(), trueMatch[1]];
+        }
+      }
+    }
+    
     if (m) {
       const idx = Number(m[1]);
       const val = m[2].toLowerCase() === 'true';
@@ -1070,6 +1262,25 @@ function renderApiDocs(host) {
   "success": false,
   "error": "검열 처리 중 오류: [오류 메시지]"
 }</pre>
+    
+    <p>레이트 리미팅 (429 Too Many Requests):</p>
+    <pre>{
+  "success": false,
+  "error": "보안상 업로드가 제한되었습니다. 1분 내 20개 초과 업로드로 인한 5분 차단. 300초 후 다시 시도하세요.",
+  "rateLimited": true,
+  "remainingTime": 300
+}</pre>
+  </div>
+  
+  <h2>레이트 리미팅</h2>
+  <div class="endpoint">
+    <h3>업로드 제한</h3>
+    <p>보안을 위해 다음과 같은 레이트 리미팅이 적용됩니다:</p>
+    <ul>
+      <li><strong>1분 제한:</strong> 동일한 IP에서 1분 내 20개 이상 업로드 시 5분간 차단</li>
+      <li><strong>1시간 제한:</strong> 동일한 IP에서 1시간 내 100개 이상 업로드 시 1시간 차단</li>
+    </ul>
+    <p>제한 초과 시 HTTP 429 상태 코드와 함께 차단 해제까지 남은 시간이 응답됩니다.</p>
   </div>
   
   <h2>코드 예제</h2>
