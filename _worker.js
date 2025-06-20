@@ -272,7 +272,7 @@ export default {
           if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
             mediaTags += `<video src="https://${url.host}/${code}?raw=1"></video>\n`;
           } else {
-            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media">\n`;
           }
         }
         return new Response(renderHTML(mediaTags, url.host), {
@@ -291,7 +291,7 @@ export default {
           if (object.httpMetadata?.contentType?.startsWith('video/')) {
             mediaTag = `<video src="https://${url.host}/${key}?raw=1"></video>\n`;
           } else {
-            mediaTag = `<img src="https://${url.host}/${key}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+            mediaTag = `<img src="https://${url.host}/${key}?raw=1" alt="Uploaded Media">\n`;
           }
           return new Response(renderHTML(mediaTag, url.host), {
             headers: { 'Content-Type': 'text/html; charset=UTF-8' }
@@ -341,12 +341,23 @@ async function handleUpload(request, env) {
 
   // 1) 검열
   try {
-    for (const file of files) {
+    console.log(`[검열 시작] ${files.length}개 파일 검열 시작`);
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      console.log(`[검열 진행] ${i + 1}/${files.length} - ${file.type}, ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      
       const r = file.type.startsWith('image/')
         ? await handleImageCensorship(file, env)
         : await handleVideoCensorship(file, env);
-      if (!r.ok) return r.response;
+        
+      if (!r.ok) {
+        console.log(`[검열 실패] ${i + 1}번째 파일에서 검열 실패`);
+        return r.response;
+      } else {
+        console.log(`[검열 통과] ${i + 1}번째 파일 검열 통과`);
+      }
     }
+    console.log(`[검열 완료] 모든 파일(${files.length}개) 검열 통과`);
   } catch (e) {
     console.log("검열 과정에서 예상치 못한 오류 발생:", e);
     return new Response(JSON.stringify({
@@ -431,18 +442,37 @@ async function handleImageCensorship(file, env) {
       contents: [{
         parts: [
           { text:
-            "이 이미지에 부적절한 콘텐츠가 포함되어 있는지 확인해주세요. 각 카테고리별로 true 또는 false로만 답변해주세요:\n\n" +
-            "1. 노출/선정적 이미지: true/false\n" +
-            "2. 폭력/무기: true/false\n" +
-            "3. 약물/알코올: true/false\n" +
-            "4. 욕설/혐오 표현: true/false\n" +
-            "5. 기타 유해 콘텐츠: true/false\n\n" +
-            "각 줄에 숫자와 true/false만 답변하세요. 추가 설명은 하지 마세요."
+            "Analyze this image for inappropriate content. Be extremely precise and thorough. " +
+            "Look for any attempts to bypass detection through noise, partial covering, artistic filters, or text obfuscation. " +
+            "Also analyze any visible text in the image for inappropriate language, including leetspeak, symbols replacing letters, or intentional misspellings. " +
+            "Rate each category as true (inappropriate) or false (appropriate). Only respond with the number and true/false on each line:\n\n" +
+            "1. Nudity/Sexual content (exposed genitals, sexual acts, suggestive poses): true/false\n" +
+            "2. Partial nudity/Suggestive content (underwear focus, sexual implications, provocative clothing): true/false\n" +
+            "3. Violence/Weapons (guns, knives, violence depiction, weapons display): true/false\n" +
+            "4. Graphic violence/Gore (blood, injuries, death, extreme violence): true/false\n" +
+            "5. Drugs/Alcohol abuse (drug paraphernalia, excessive drinking, drug use): true/false\n" +
+            "6. Hate speech/Offensive language (slurs, hate symbols, discriminatory text): true/false\n" +
+            "7. Harassment/Bullying content (targeting individuals, cyberbullying, intimidation): true/false\n" +
+            "8. Self-harm/Suicide content (cutting, suicide methods, self-injury): true/false\n" +
+            "9. Illegal activities (theft, fraud, illegal substances, criminal acts): true/false\n" +
+            "10. Spam/Scam content (fake offers, phishing, misleading information): true/false\n" +
+            "11. Child exploitation (minors in inappropriate contexts, child endangerment): true/false\n" +
+            "12. Extremist content (terrorist symbols, radical ideologies, dangerous groups): true/false\n\n" +
+            "Be conservative but accurate. Normal everyday content, artistic expression, educational material, " +
+            "and legitimate creative content should be marked as false. Only mark as true if clearly inappropriate."
            },
           { inlineData: { mimeType: file.type, data: imageBase64 } }
         ]
       }],
-      generationConfig: { temperature: 0.1, topK: 40, topP: 0.95, maxOutputTokens: 256 }
+      generationConfig: { 
+        temperature: 0.05, 
+        topK: 20, 
+        topP: 0.8, 
+        maxOutputTokens: 400,
+        thinkingConfig: {
+          thinkingBudget: 0  // Thinking 모드 비활성화로 성능 최적화
+        }
+      }
     };
 
     const analysis = await callGeminiAPI(geminiApiKey, requestBody);
@@ -454,9 +484,42 @@ async function handleImageCensorship(file, env) {
     }
 
     const bad = isInappropriateContent(analysis.text);
+    
+    // 추가 검증: 너무 많은 카테고리가 true로 나온 경우 재검토
+    if (bad.isInappropriate && bad.reasons.length >= 4) {
+      console.log(`[과도한 검열 감지] ${bad.reasons.length}개 카테고리 검출, 재검토 필요`);
+      
+      // 보수적 재검토 요청
+      const reReviewBody = {
+        contents: [{
+          parts: [
+            { text:
+              "Re-examine this image very carefully. Be EXTREMELY conservative and only flag content that is clearly and unambiguously inappropriate. " +
+              "Many legitimate, artistic, educational, or everyday content should NOT be flagged. " +
+              "Consider context and intent. Only respond 'INAPPROPRIATE' if you are absolutely certain the content violates guidelines, otherwise respond 'APPROPRIATE'."
+             },
+            { inlineData: { mimeType: file.type, data: imageBase64 } }
+          ]
+        }],
+        generationConfig: { 
+          temperature: 0.0, 
+          topK: 10, 
+          topP: 0.7, 
+          maxOutputTokens: 50
+        }
+      };
+      
+      const reReview = await callGeminiAPI(geminiApiKey, reReviewBody);
+      if (reReview.success && reReview.text.toLowerCase().includes('appropriate')) {
+        console.log(`[재검토 결과] 적절한 콘텐츠로 판정, 통과 처리`);
+        return { ok: true };
+      }
+    }
+    
     if (bad.isInappropriate) {
+      console.log(`[검열 완료] 부적절한 콘텐츠 감지: ${bad.reasons.join(", ")}`);
       return { ok: false, response: new Response(JSON.stringify({
-          success: false, error: `검열됨: ${bad.reasons.join(", ")}`
+          success: false, error: `업로드가 거부되었습니다. 부적절한 콘텐츠 감지: ${bad.reasons.join(", ")}`
         }), { status: 400, headers: { 'Content-Type': 'application/json' } })
       };
     }
@@ -575,27 +638,80 @@ async function handleVideoCensorship(file, env) {
       contents: [{
         parts: [
           { text:
-              "이 비디오에 부적절한 콘텐츠가 포함되어 있는지 확인해주세요. 각 카테고리별로 true 또는 false로만 답변해주세요:\n\n" +
-              "1. 노출/선정적 이미지: true/false\n" +
-              "2. 폭력/무기: true/false\n" +
-              "3. 약물/알코올: true/false\n" +
-              "4. 욕설/혐오 표현: true/false\n" +
-              "5. 기타 유해 콘텐츠: true/false\n\n" +
-              "각 줄에 숫자와 true/false만 답변하세요. 추가 설명은 하지 마세요."
+              "Analyze this video for inappropriate content frame by frame. Be extremely precise and thorough. " +
+              "Look for any attempts to bypass detection through quick flashes, partial covering, artistic filters, blurring, or text obfuscation. " +
+              "Analyze any visible text or audio for inappropriate language, including leetspeak, symbols replacing letters, or intentional misspellings. " +
+              "Consider the entire video duration and any content that appears briefly. " +
+              "Rate each category as true (inappropriate) or false (appropriate). Only respond with the number and true/false on each line:\n\n" +
+              "1. Nudity/Sexual content (exposed genitals, sexual acts, suggestive poses): true/false\n" +
+              "2. Partial nudity/Suggestive content (underwear focus, sexual implications, provocative clothing): true/false\n" +
+              "3. Violence/Weapons (guns, knives, violence depiction, weapons display): true/false\n" +
+              "4. Graphic violence/Gore (blood, injuries, death, extreme violence): true/false\n" +
+              "5. Drugs/Alcohol abuse (drug paraphernalia, excessive drinking, drug use): true/false\n" +
+              "6. Hate speech/Offensive language (slurs, hate symbols, discriminatory text or audio): true/false\n" +
+              "7. Harassment/Bullying content (targeting individuals, cyberbullying, intimidation): true/false\n" +
+              "8. Self-harm/Suicide content (cutting, suicide methods, self-injury): true/false\n" +
+              "9. Illegal activities (theft, fraud, illegal substances, criminal acts): true/false\n" +
+              "10. Spam/Scam content (fake offers, phishing, misleading information): true/false\n" +
+              "11. Child exploitation (minors in inappropriate contexts, child endangerment): true/false\n" +
+              "12. Extremist content (terrorist symbols, radical ideologies, dangerous groups): true/false\n\n" +
+              "Be conservative but accurate. Normal everyday content, artistic expression, educational material, " +
+              "gaming content, and legitimate creative content should be marked as false. Only mark as true if clearly inappropriate."
              },
           { file_data: { mime_type: file.type, file_uri: fileUri } }
         ]
       }],
-      generationConfig: { temperature: 0.1, topK: 40, topP: 0.95, maxOutputTokens: 256 }
+      generationConfig: { 
+        temperature: 0.05, 
+        topK: 20, 
+        topP: 0.8, 
+        maxOutputTokens: 400,
+        thinkingConfig: {
+          thinkingBudget: 0  // Thinking 모드 비활성화로 성능 최적화
+        }
+      }
     };
     const analysis = await callGeminiAPI(geminiApiKey, requestBody);
     if (!analysis.success) {
       throw new Error(analysis.error);
     }
     const bad = isInappropriateContent(analysis.text);
+    
+    // 추가 검증: 너무 많은 카테고리가 true로 나온 경우 재검토
+    if (bad.isInappropriate && bad.reasons.length >= 4) {
+      console.log(`[비디오 과도한 검열 감지] ${bad.reasons.length}개 카테고리 검출, 재검토 필요`);
+      
+      // 보수적 재검토 요청
+      const reReviewBody = {
+        contents: [{
+          parts: [
+            { text:
+              "Re-examine this video very carefully. Be EXTREMELY conservative and only flag content that is clearly and unambiguously inappropriate. " +
+              "Many legitimate, artistic, educational, gaming, or everyday content should NOT be flagged. " +
+              "Consider context and intent. Only respond 'INAPPROPRIATE' if you are absolutely certain the content violates guidelines, otherwise respond 'APPROPRIATE'."
+             },
+            { file_data: { mime_type: file.type, file_uri: fileUri } }
+          ]
+        }],
+        generationConfig: { 
+          temperature: 0.0, 
+          topK: 10, 
+          topP: 0.7, 
+          maxOutputTokens: 50
+        }
+      };
+      
+      const reReview = await callGeminiAPI(geminiApiKey, reReviewBody);
+      if (reReview.success && reReview.text.toLowerCase().includes('appropriate')) {
+        console.log(`[비디오 재검토 결과] 적절한 콘텐츠로 판정, 통과 처리`);
+        return { ok: true };
+      }
+    }
+    
     if (bad.isInappropriate) {
+      console.log(`[비디오 검열 완료] 부적절한 콘텐츠 감지: ${bad.reasons.join(", ")}`);
       return { ok: false, response: new Response(JSON.stringify({
-          success: false, error: `검열됨: ${bad.reasons.join(', ')}`
+          success: false, error: `업로드가 거부되었습니다. 부적절한 콘텐츠 감지: ${bad.reasons.join(', ')}`
         }), { status: 400, headers: { 'Content-Type': 'application/json' } }) };
     }
     return { ok: true };
@@ -613,7 +729,7 @@ async function callGeminiAPI(apiKey, requestBody) {
   const maxRetries = 3, retryDelay = 2000;
   while (retryCount < maxRetries) {
     try {
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${apiKey}`;
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -635,21 +751,42 @@ async function callGeminiAPI(apiKey, requestBody) {
         return { success: false, error: `API 오류 (${response.status}): ${response.statusText}` };
       }
       const data = await response.json();
-      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!content) {
-        // 안전한 디버깅 정보만 로그
+      
+      // Gemini 2.5 Flash의 새로운 응답 구조 처리
+      const candidate = data.candidates?.[0];
+      if (!candidate?.content?.parts) {
         console.log('Gemini API 응답 상태:', {
           hasCandidates: !!data.candidates,
           candidatesLength: data.candidates?.length || 0,
-          hasContent: !!data.candidates?.[0]?.content,
-          hasParts: !!data.candidates?.[0]?.content?.parts,
-          partsLength: data.candidates?.[0]?.content?.parts?.length || 0,
-          hasText: !!data.candidates?.[0]?.content?.parts?.[0]?.text,
+          hasContent: !!candidate?.content,
+          hasParts: !!candidate?.content?.parts,
           responseKeys: Object.keys(data || {})
         });
         return { success: false, error: 'Gemini API에서 유효한 응답을 받지 못했습니다. API 키 또는 요청 형식을 확인해주세요.' };
       }
-      return { success: true, text: content };
+
+      // parts 배열에서 실제 응답 텍스트 찾기 (thought가 false이거나 없는 것)
+      let responseText = '';
+      for (const part of candidate.content.parts) {
+        if (part.text && (!part.thought || part.thought === false)) {
+          responseText += part.text;
+        }
+      }
+
+      // 실제 응답 텍스트가 없으면 첫 번째 텍스트 사용 (하위 호환성)
+      if (!responseText && candidate.content.parts[0]?.text) {
+        responseText = candidate.content.parts[0].text;
+      }
+
+      if (!responseText) {
+        console.log('Gemini API 응답 파싱 실패:', {
+          partsCount: candidate.content.parts.length,
+          parts: candidate.content.parts.map(p => ({ hasText: !!p.text, thought: p.thought }))
+        });
+        return { success: false, error: 'Gemini API 응답에서 텍스트를 추출할 수 없습니다.' };
+      }
+
+      return { success: true, text: responseText };
     } catch (e) {
       retryCount++;
       console.log(`API 호출 오류, 재시도 ${retryCount}/${maxRetries}:`, e);
@@ -664,40 +801,53 @@ async function callGeminiAPI(apiKey, requestBody) {
 }
 
 // =======================
-// 부적절한 내용 분석 함수 (교체 버전)
+// 부적절한 내용 분석 함수 (강화된 버전)
 // =======================
 function isInappropriateContent(responseText) {
-  // 카테고리 인덱스 → 사용자 표시용 이름 매핑
+  // 카테고리 인덱스 → 사용자 표시용 이름 매핑 (한국어)
   const categoryMap = {
-    1: '선정적 콘텐츠',
-    2: '폭력/무기 콘텐츠',
-    3: '약물/알코올 관련 콘텐츠',
-    4: '욕설/혐오 표현',
-    5: '기타 유해 콘텐츠'
+    1: '성적/노출 콘텐츠',
+    2: '부분적 노출/선정적 콘텐츠',
+    3: '폭력/무기 콘텐츠',
+    4: '극단적 폭력/고어 콘텐츠',
+    5: '약물/알코올 남용 콘텐츠',
+    6: '혐오 발언/욕설',
+    7: '괴롭힘/따돌림 콘텐츠',
+    8: '자해/자살 관련 콘텐츠',
+    9: '불법 활동',
+    10: '스팸/사기 콘텐츠',
+    11: '아동 착취',
+    12: '극단주의 콘텐츠'
   };
 
   // 결과 저장소
   const flagged = [];
 
   // 응답을 줄별로 순회하며 다양한 패턴 파싱
-  responseText.split(/\r?\n/).forEach(line => {
+  responseText.split(/\r?\n/).forEach((line, lineIndex) => {
     // 패턴 1: "숫자. true/false" 형태
-    let m = line.match(/^\s*([1-5])\.\s*(true|false)\b/i);
+    let m = line.match(/^\s*([1-9]|1[0-2])\.\s*(true|false)\b/i);
     if (!m) {
       // 패턴 2: "숫자: true/false" 형태
-      m = line.match(/^\s*([1-5]):\s*(true|false)\b/i);
+      m = line.match(/^\s*([1-9]|1[0-2]):\s*(true|false)\b/i);
     }
     if (!m) {
       // 패턴 3: "숫자 - true/false" 형태
-      m = line.match(/^\s*([1-5])\s*[-–]\s*(true|false)\b/i);
+      m = line.match(/^\s*([1-9]|1[0-2])\s*[-–]\s*(true|false)\b/i);
     }
     if (!m) {
-      // 패턴 4: 단순히 "true" 또는 "false"만 있는 경우 (순서대로 1-5 매핑)
+      // 패턴 4: "숫자) true/false" 형태
+      m = line.match(/^\s*([1-9]|1[0-2])\)\s*(true|false)\b/i);
+    }
+    if (!m) {
+      // 패턴 5: 단순히 "true" 또는 "false"만 있는 경우 (순서대로 1-12 매핑)
       const trueMatch = line.match(/^\s*(true|false)\b/i);
       if (trueMatch) {
-        const lineIndex = responseText.split(/\r?\n/).indexOf(line);
-        if (lineIndex >= 0 && lineIndex < 5) {
-          m = [null, (lineIndex + 1).toString(), trueMatch[1]];
+        // 실제 내용이 있는 줄들만 카운트
+        const contentLines = responseText.split(/\r?\n/).filter(l => l.trim().match(/^\s*(true|false)\b/i));
+        const contentLineIndex = contentLines.indexOf(line.trim());
+        if (contentLineIndex >= 0 && contentLineIndex < 12) {
+          m = [null, (contentLineIndex + 1).toString(), trueMatch[1]];
         }
       }
     }
@@ -868,23 +1018,96 @@ function renderHTML(mediaTags, host) {
       max-width: 40vw;
       cursor: zoom-in;
     }
-  
-    #imageContainer img.expanded.landscape,
-    #imageContainer video.expanded.landscape {
-      width: 80vw;
-      height: auto;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
+
+    /* 전체화면 모달 스타일 */
+    .image-modal {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.9);
     }
-  
-    #imageContainer img.expanded.portrait,
-    #imageContainer video.expanded.portrait {
-      width: auto;
-      height: 100vh;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
+
+    .modal-content {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+         .modal-image {
+       max-width: 90%;
+       max-height: 90%;
+       transform-origin: center;
+       transition: transform 0.3s ease;
+       cursor: grab;
+       touch-action: manipulation; /* 모바일 더블탭 확대 방지 */
+       user-select: none; /* 텍스트 선택 방지 */
+       -webkit-user-select: none;
+       -moz-user-select: none;
+       -ms-user-select: none;
+     }
+
+     .modal-image:active {
+       cursor: grabbing;
+     }
+
+     .modal-image.dragging {
+       transition: none; /* 드래그 중 애니메이션 제거 */
+       cursor: grabbing;
+     }
+
+    /* 컨트롤 패널 */
+    .modal-controls {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 10px;
+      border-radius: 25px;
+    }
+
+    .control-btn {
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      color: white;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      transition: background 0.3s ease;
+    }
+
+    .control-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
+    /* 닫기 버튼 */
+    .modal-close {
+      position: absolute;
+      top: 20px;
+      right: 30px;
+      color: white;
+      font-size: 40px;
+      font-weight: bold;
+      cursor: pointer;
+      z-index: 1001;
+    }
+
+    .modal-close:hover {
+      opacity: 0.7;
     }
   
     .container {
@@ -988,6 +1211,22 @@ function renderHTML(mediaTags, host) {
   <div id="imageContainer">
     ${mediaTags}
   </div>
+  
+  <!-- 전체화면 이미지 모달 -->
+  <div id="imageModal" class="image-modal">
+    <span class="modal-close" id="modalClose">&times;</span>
+    <div class="modal-content">
+      <img id="modalImage" class="modal-image" src="" alt="확대된 이미지" draggable="false">
+      <div class="modal-controls">
+        <button class="control-btn" id="zoomIn" title="확대">+</button>
+        <button class="control-btn" id="zoomOut" title="축소">-</button>
+        <button class="control-btn" id="rotateLeft" title="왼쪽 회전">↶</button>
+        <button class="control-btn" id="rotateRight" title="오른쪽 회전">↷</button>
+        <button class="control-btn" id="resetView" title="원래 크기">⟲</button>
+      </div>
+    </div>
+  </div>
+  
   <div class="custom-context-menu" id="customContextMenu" style="display: none;">
       <button id="copyImage">이미지 복사</button>
       <button id="copyImageurl">이미지 링크 복사</button>
@@ -995,21 +1234,192 @@ function renderHTML(mediaTags, host) {
       <button id="downloadImagepng">png로 다운로드</button>
   </div>
   <script>
-    function toggleZoom(elem) {
-      if (!elem.classList.contains('landscape') && !elem.classList.contains('portrait')) {
-        let width=0, height=0;
-        if (elem.tagName.toLowerCase()==='img') {
-          width=elem.naturalWidth; height=elem.naturalHeight;
-        } else if (elem.tagName.toLowerCase()==='video') {
-          width=elem.videoWidth; height=elem.videoHeight;
-        }
-        if(width && height){
-          if(width>=height) elem.classList.add('landscape');
-          else elem.classList.add('portrait');
+    // 새로운 이미지 뷰어 기능
+    class ImageViewer {
+      constructor() {
+        this.modal = document.getElementById('imageModal');
+        this.modalImage = document.getElementById('modalImage');
+        this.closeBtn = document.getElementById('modalClose');
+        this.zoomInBtn = document.getElementById('zoomIn');
+        this.zoomOutBtn = document.getElementById('zoomOut');
+        this.rotateLeftBtn = document.getElementById('rotateLeft');
+        this.rotateRightBtn = document.getElementById('rotateRight');
+        this.resetBtn = document.getElementById('resetView');
+        
+        this.scale = 1;
+        this.rotation = 0;
+        this.posX = 0;
+        this.posY = 0;
+        this.isDragging = false;
+        this.startX = 0;
+        this.startY = 0;
+        
+        this.init();
+      }
+      
+      init() {
+        // 이벤트 리스너 등록
+        this.closeBtn.addEventListener('click', () => this.closeModal());
+        this.modal.addEventListener('click', (e) => {
+          if (e.target === this.modal) this.closeModal();
+        });
+        
+        // 컨트롤 버튼 이벤트
+        this.zoomInBtn.addEventListener('click', () => this.zoomIn());
+        this.zoomOutBtn.addEventListener('click', () => this.zoomOut());
+        this.rotateLeftBtn.addEventListener('click', () => this.rotateLeft());
+        this.rotateRightBtn.addEventListener('click', () => this.rotateRight());
+        this.resetBtn.addEventListener('click', () => this.resetView());
+        
+                 // 마우스 드래그 이벤트
+         this.modalImage.addEventListener('mousedown', (e) => this.startDrag(e));
+         document.addEventListener('mousemove', (e) => this.drag(e));
+         document.addEventListener('mouseup', () => this.endDrag());
+         
+         // 터치 드래그 이벤트 (모바일)
+         this.modalImage.addEventListener('touchstart', (e) => this.startTouch(e));
+         document.addEventListener('touchmove', (e) => this.touchMove(e));
+         document.addEventListener('touchend', () => this.endDrag());
+         
+         // 브라우저 기본 드래그 및 더블탭 확대 방지
+         this.modalImage.addEventListener('dragstart', (e) => e.preventDefault());
+         this.modalImage.addEventListener('gesturestart', (e) => e.preventDefault());
+         this.modalImage.addEventListener('gesturechange', (e) => e.preventDefault());
+         this.modalImage.addEventListener('gestureend', (e) => e.preventDefault());
+        
+        // 마우스 휠로 확대/축소
+        this.modalImage.addEventListener('wheel', (e) => this.handleWheel(e));
+        
+        // ESC 키로 닫기
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && this.modal.style.display === 'block') {
+            this.closeModal();
+          }
+        });
+        
+        // 이미지 클릭 이벤트 등록
+        this.setupImageClickHandlers();
+      }
+      
+      setupImageClickHandlers() {
+        document.querySelectorAll('#imageContainer img').forEach(img => {
+          this.addClickHandler(img);
+        });
+      }
+      
+      addClickHandler(img) {
+        img.addEventListener('click', (e) => {
+          e.preventDefault();
+          this.openModal(img.src);
+        });
+      }
+      
+      openModal(imageSrc) {
+        this.modalImage.src = imageSrc;
+        this.modal.style.display = 'block';
+        this.resetView();
+        document.body.style.overflow = 'hidden';
+      }
+      
+      closeModal() {
+        this.modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+      }
+      
+      zoomIn() {
+        this.scale = Math.min(this.scale * 1.2, 5);
+        this.updateTransform();
+      }
+      
+      zoomOut() {
+        this.scale = Math.max(this.scale / 1.2, 0.1);
+        this.updateTransform();
+      }
+      
+      rotateLeft() {
+        this.rotation -= 90;
+        this.updateTransform();
+      }
+      
+      rotateRight() {
+        this.rotation += 90;
+        this.updateTransform();
+      }
+      
+      resetView() {
+        this.scale = 1;
+        this.rotation = 0;
+        this.posX = 0;
+        this.posY = 0;
+        this.updateTransform();
+      }
+      
+             startDrag(e) {
+         if (this.scale > 1) {
+           this.isDragging = true;
+           this.startX = e.clientX - this.posX;
+           this.startY = e.clientY - this.posY;
+           this.modalImage.classList.add('dragging');
+           e.preventDefault();
+         }
+       }
+       
+       startTouch(e) {
+         if (this.scale > 1 && e.touches.length === 1) {
+           this.isDragging = true;
+           const touch = e.touches[0];
+           this.startX = touch.clientX - this.posX;
+           this.startY = touch.clientY - this.posY;
+           this.modalImage.classList.add('dragging');
+           e.preventDefault();
+         }
+       }
+       
+       drag(e) {
+         if (this.isDragging) {
+           this.posX = e.clientX - this.startX;
+           this.posY = e.clientY - this.startY;
+           this.updateTransform();
+         }
+       }
+       
+       touchMove(e) {
+         if (this.isDragging && e.touches.length === 1) {
+           const touch = e.touches[0];
+           this.posX = touch.clientX - this.startX;
+           this.posY = touch.clientY - this.startY;
+           this.updateTransform();
+           e.preventDefault();
+         }
+       }
+       
+       endDrag() {
+         if (this.isDragging) {
+           this.isDragging = false;
+           this.modalImage.classList.remove('dragging');
+         }
+       }
+      
+      handleWheel(e) {
+        e.preventDefault();
+        if (e.deltaY < 0) {
+          this.zoomIn();
+        } else {
+          this.zoomOut();
         }
       }
-      elem.classList.toggle('expanded');
+      
+      updateTransform() {
+        const transform = \`translate(\${this.posX}px, \${this.posY}px) scale(\${this.scale}) rotate(\${this.rotation}deg)\`;
+        this.modalImage.style.transform = transform;
+      }
     }
+    
+    // 이미지 뷰어 초기화
+    document.addEventListener('DOMContentLoaded', () => {
+      new ImageViewer();
+    });
+    
     document.getElementById('toggleButton')?.addEventListener('click',function(){
       window.location.href='/';
     });
