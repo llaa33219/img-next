@@ -3,6 +3,111 @@
 // ==============================
 const requestsInProgress = {};
 
+// ==============================
+// 전역: 레이트 리미팅 관리 Map
+// ==============================
+const rateLimitData = new Map(); // IP별 요청 기록
+const blockedIPs = new Map(); // 차단된 IP와 해제 시간
+
+// 레이트 리미팅 검사 함수
+function checkRateLimit(clientIP) {
+  const now = Date.now();
+  
+  // 차단된 IP 확인
+  if (blockedIPs.has(clientIP)) {
+    const blockInfo = blockedIPs.get(clientIP);
+    if (now < blockInfo.unblockTime) {
+      const remainingTime = Math.ceil((blockInfo.unblockTime - now) / 1000);
+      return {
+        blocked: true,
+        reason: blockInfo.reason,
+        remainingTime: remainingTime
+      };
+    } else {
+      // 차단 시간이 지났으므로 해제
+      blockedIPs.delete(clientIP);
+    }
+  }
+  
+  // 현재 IP의 요청 기록 가져오기 또는 생성
+  if (!rateLimitData.has(clientIP)) {
+    rateLimitData.set(clientIP, {
+      requests: [],
+      lastCleanup: now
+    });
+  }
+  
+  const ipData = rateLimitData.get(clientIP);
+  
+  // 오래된 요청 기록 정리 (1시간 이상 된 것)
+  if (now - ipData.lastCleanup > 60000) { // 1분마다 정리
+    ipData.requests = ipData.requests.filter(time => now - time < 3600000); // 1시간
+    ipData.lastCleanup = now;
+  }
+  
+  // 현재 요청 추가
+  ipData.requests.push(now);
+  
+  // 1분 내 요청 수 확인 (20개 초과시 5분 차단)
+  const oneMinuteAgo = now - 60000;
+  const recentRequests = ipData.requests.filter(time => time > oneMinuteAgo);
+  
+  if (recentRequests.length > 20) {
+    const unblockTime = now + (5 * 60 * 1000); // 5분 후
+    blockedIPs.set(clientIP, {
+      unblockTime: unblockTime,
+      reason: '1분 내 20개 초과 업로드'
+    });
+    return {
+      blocked: true,
+      reason: '1분 내 20개 초과 업로드로 인한 5분 차단',
+      remainingTime: 300
+    };
+  }
+  
+  // 1시간 내 요청 수 확인 (100개 초과시 1시간 차단)
+  const oneHourAgo = now - 3600000;
+  const hourlyRequests = ipData.requests.filter(time => time > oneHourAgo);
+  
+  if (hourlyRequests.length > 100) {
+    const unblockTime = now + (60 * 60 * 1000); // 1시간 후
+    blockedIPs.set(clientIP, {
+      unblockTime: unblockTime,
+      reason: '1시간 내 100개 초과 업로드'
+    });
+    return {
+      blocked: true,
+      reason: '1시간 내 100개 초과 업로드로 인한 1시간 차단',
+      remainingTime: 3600
+    };
+  }
+  
+  return { blocked: false };
+}
+
+// 메모리 정리 함수 (주기적으로 호출)
+function cleanupOldData() {
+  const now = Date.now();
+  const oneHourAgo = now - 3600000;
+  
+  // 오래된 요청 기록 정리
+  for (const [ip, data] of rateLimitData.entries()) {
+    data.requests = data.requests.filter(time => time > oneHourAgo);
+    if (data.requests.length === 0) {
+      rateLimitData.delete(ip);
+    }
+  }
+  
+  // 만료된 차단 기록 정리
+  for (const [ip, blockInfo] of blockedIPs.entries()) {
+    if (now >= blockInfo.unblockTime) {
+      blockedIPs.delete(ip);
+    }
+  }
+  
+  console.log(`[Cleanup] 레이트 리미팅 데이터 정리 완료. 활성 IP: ${rateLimitData.size}, 차단된 IP: ${blockedIPs.size}`);
+}
+
 // CORS 헤더 추가 함수
 function addCorsHeaders(response) {
   const headers = new Headers(response.headers);
@@ -20,6 +125,13 @@ function addCorsHeaders(response) {
 
 export default {
   async fetch(request, env, ctx) {
+    // 주기적으로 메모리 정리 (10분마다)
+    const now = Date.now();
+    if (!this.lastCleanup || now - this.lastCleanup > 600000) {
+      ctx.waitUntil(Promise.resolve().then(() => cleanupOldData()));
+      this.lastCleanup = now;
+    }
+    
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/$/, '');
 
@@ -38,6 +150,27 @@ export default {
 
     // 1) [POST] /upload 또는 /upload/ => 업로드 처리 (웹 인터페이스)
     if (request.method === 'POST' && path === '/upload') {
+      // 클라이언트 IP 가져오기
+      const clientIP = request.headers.get('CF-Connecting-IP') || 
+                      request.headers.get('X-Forwarded-For') || 
+                      request.headers.get('X-Real-IP') || 
+                      'unknown';
+      
+      // 레이트 리미팅 검사
+      const rateLimitResult = checkRateLimit(clientIP);
+      if (rateLimitResult.blocked) {
+        console.log(`[Rate Limit] IP ${clientIP} 차단됨: ${rateLimitResult.reason}`);
+        return new Response(JSON.stringify({
+          success: false,
+          error: `보안상 업로드가 제한되었습니다. ${rateLimitResult.reason}. ${rateLimitResult.remainingTime}초 후 다시 시도하세요.`,
+          rateLimited: true,
+          remainingTime: rateLimitResult.remainingTime
+        }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      
       // 요청이 웹 인터페이스에서 왔는지 외부에서 왔는지 확인
       const isExternalRequest = request.headers.get('Origin') && 
                                !request.headers.get('Origin').includes(url.host);
@@ -83,6 +216,28 @@ export default {
 
     // 2) [POST] /api/upload => API 전용 업로드 엔드포인트 (외부용)
     else if (request.method === 'POST' && path === '/api/upload') {
+      // 클라이언트 IP 가져오기
+      const clientIP = request.headers.get('CF-Connecting-IP') || 
+                      request.headers.get('X-Forwarded-For') || 
+                      request.headers.get('X-Real-IP') || 
+                      'unknown';
+      
+      // 레이트 리미팅 검사
+      const rateLimitResult = checkRateLimit(clientIP);
+      if (rateLimitResult.blocked) {
+        console.log(`[Rate Limit] API IP ${clientIP} 차단됨: ${rateLimitResult.reason}`);
+        const response = new Response(JSON.stringify({
+          success: false,
+          error: `보안상 업로드가 제한되었습니다. ${rateLimitResult.reason}. ${rateLimitResult.remainingTime}초 후 다시 시도하세요.`,
+          rateLimited: true,
+          remainingTime: rateLimitResult.remainingTime
+        }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' }
+        });
+        return addCorsHeaders(response);
+      }
+      
       const response = await handleUpload(request, env);
       return addCorsHeaders(response);
     }
@@ -117,7 +272,7 @@ export default {
           if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
             mediaTags += `<video src="https://${url.host}/${code}?raw=1"></video>\n`;
           } else {
-            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+            mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media">\n`;
           }
         }
         return new Response(renderHTML(mediaTags, url.host), {
@@ -136,7 +291,7 @@ export default {
           if (object.httpMetadata?.contentType?.startsWith('video/')) {
             mediaTag = `<video src="https://${url.host}/${key}?raw=1"></video>\n`;
           } else {
-            mediaTag = `<img src="https://${url.host}/${key}?raw=1" alt="Uploaded Media" onclick="toggleZoom(this)">\n`;
+            mediaTag = `<img src="https://${url.host}/${key}?raw=1" alt="Uploaded Media">\n`;
           }
           return new Response(renderHTML(mediaTag, url.host), {
             headers: { 'Content-Type': 'text/html; charset=UTF-8' }
@@ -184,130 +339,307 @@ async function handleUpload(request, env) {
     }
   }
 
-  // 1) 검열
-  try {
-    for (const file of files) {
+  // 1) 검열 - 다중 업로드시 실패한 파일 수집, 단일 업로드시 즉시 중단
+  console.log(`[검열 시작] ${files.length}개 파일 검열 시작`);
+  const validFiles = [];
+  const failedFiles = [];
+  
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    console.log(`[검열 진행] ${i + 1}/${files.length} - ${file.name || 'Unknown'}, ${file.type}, ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+    
+    try {
       const r = file.type.startsWith('image/')
         ? await handleImageCensorship(file, env)
         : await handleVideoCensorship(file, env);
-      if (!r.ok) return r.response;
+        
+      if (!r.ok) {
+        console.log(`[검열 실패] ${i + 1}번째 파일에서 검열 실패`);
+        // 기존 응답에서 에러 메시지 추출
+        let errorMessage = '알 수 없는 오류';
+        try {
+          const responseText = await r.response.text();
+          const errorData = JSON.parse(responseText);
+          errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+          console.log('에러 메시지 파싱 실패:', e);
+        }
+        
+        const fileInfo = { 
+          index: i + 1, 
+          name: file.name || 'Unknown', 
+          error: errorMessage 
+        };
+        failedFiles.push(fileInfo);
+        
+        // 단일 파일 업로드시에만 즉시 중단
+        if (files.length === 1) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `파일 검열 실패: ${errorMessage}`
+          }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        }
+      } else {
+        console.log(`[검열 통과] ${i + 1}번째 파일 검열 통과`);
+        validFiles.push({ file, index: i + 1 });
+      }
+    } catch (e) {
+      console.log(`[검열 오류] ${i + 1}번째 파일 검열 중 오류:`, e);
+      const fileInfo = { 
+        index: i + 1, 
+        name: file.name || 'Unknown', 
+        error: `검열 중 오류: ${e.message}` 
+      };
+      failedFiles.push(fileInfo);
+      
+      // 단일 파일 업로드시에만 즉시 중단
+      if (files.length === 1) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `파일 검열 중 오류: ${e.message}`
+        }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
     }
-  } catch (e) {
-    console.log("검열 과정에서 예상치 못한 오류 발생:", e);
+  }
+  
+  console.log(`[검열 완료] ${validFiles.length}개 파일 검열 통과, ${failedFiles.length}개 파일 실패`);
+  
+  // 모든 파일이 실패한 경우
+  if (validFiles.length === 0) {
     return new Response(JSON.stringify({
       success: false,
-      error: `검열 처리 중 오류: ${e.message}`
+      error: '모든 파일이 검열에 실패했습니다.',
+      failedFiles: failedFiles
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  // 2) R2 업로드 - 검열 통과한 파일들만 업로드
+  let codes = [];
+  const uploadSuccessFiles = [];
+  const uploadFailedFiles = [];
+  
+  if (customName && validFiles.length === 1) {
+    customName = customName.replace(/ /g, "_");
+    try {
+      if (await env.IMAGES.get(customName)) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: '이미 사용 중인 이름입니다. 다른 이름을 선택해주세요.'
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      console.log(`[R2 업로드] 커스텀 이름으로 업로드 시작: ${customName}`);
+      const buffer = await validFiles[0].file.arrayBuffer();
+      await env.IMAGES.put(customName, buffer, {
+        httpMetadata: { contentType: validFiles[0].file.type }
+      });
+      codes.push(customName);
+      uploadSuccessFiles.push({
+        index: validFiles[0].index,
+        name: validFiles[0].file.name || 'Unknown',
+        code: customName
+      });
+      console.log(`[R2 업로드] 커스텀 이름 업로드 완료: ${customName}`);
+    } catch (e) {
+      console.log(`[R2 업로드 실패] 커스텀 이름 업로드 오류:`, e);
+      return new Response(JSON.stringify({
+        success: false,
+        error: `파일 업로드 실패: ${e.message}`
+      }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+  } else {
+    console.log(`[R2 업로드] ${validFiles.length}개 파일 업로드 시작`);
+    for (let i = 0; i < validFiles.length; i++) {
+      const { file, index } = validFiles[i];
+      try {
+        console.log(`[R2 업로드] ${i + 1}/${validFiles.length} - ${file.name || 'Unknown'} 업로드 중...`);
+        const code = await generateUniqueCode(env);
+        const buffer = await file.arrayBuffer();
+        await env.IMAGES.put(code, buffer, {
+          httpMetadata: { contentType: file.type }
+        });
+        codes.push(code);
+        uploadSuccessFiles.push({
+          index: index,
+          name: file.name || 'Unknown',
+          code: code
+        });
+        console.log(`[R2 업로드] ${i + 1}/${validFiles.length} - 업로드 완료: ${code}`);
+      } catch (e) {
+        console.log(`[R2 업로드 실패] ${index}번째 파일 업로드 오류:`, e);
+        uploadFailedFiles.push({
+          index: index,
+          name: file.name || 'Unknown',
+          error: `업로드 실패: ${e.message}`
+        });
+        
+        // 단일 파일 업로드시에만 즉시 중단
+        if (validFiles.length === 1) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `파일 업로드 실패: ${e.message}`
+          }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+        }
+      }
+    }
+    console.log(`[R2 업로드] ${uploadSuccessFiles.length}개 파일 업로드 성공, ${uploadFailedFiles.length}개 파일 업로드 실패`);
+  }
+  
+  // 모든 업로드가 실패한 경우
+  if (codes.length === 0) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: '모든 파일 업로드에 실패했습니다.',
+      failedFiles: [...failedFiles, ...uploadFailedFiles]
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 
-  // 2) R2 업로드
-  let codes = [];
-  if (customName && files.length === 1) {
-    customName = customName.replace(/ /g, "_");
-    if (await env.IMAGES.get(customName)) {
-      return new Response(JSON.stringify({
-        success: false,
-        error: '이미 사용 중인 이름입니다. 다른 이름을 선택해주세요.'
-      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    }
-    const buffer = await files[0].arrayBuffer();
-    await env.IMAGES.put(customName, buffer, {
-      httpMetadata: { contentType: files[0].type }
-    });
-    codes.push(customName);
-  } else {
-    for (const file of files) {
-      const code = await generateUniqueCode(env);
-      const buffer = await file.arrayBuffer();
-      await env.IMAGES.put(code, buffer, {
-        httpMetadata: { contentType: file.type }
-      });
-      codes.push(code);
-    }
-  }
-
   const host = request.headers.get('host') || 'example.com';
-  const finalUrl = `https://${host}/${codes.join(",")}`;
+  const finalUrl = codes.length > 0 ? `https://${host}/${codes.join(",")}` : null;
   const rawUrls = codes.map(code => `https://${host}/${code}?raw=1`);
   console.log(">>> 업로드 완료 =>", finalUrl);
 
-  // API 응답에 추가 정보 포함
-  return new Response(JSON.stringify({ 
-    success: true, 
+  // 전체 실패한 파일 목록 (검열 실패 + 업로드 실패)
+  const allFailedFiles = [...failedFiles, ...uploadFailedFiles];
+  
+  // API 응답에 성공/실패 정보 포함
+  const responseData = { 
+    success: codes.length > 0, 
     url: finalUrl,
     rawUrls: rawUrls,
     codes: codes,
-    fileTypes: files.map(file => file.type)
-  }), {
+    uploadedFiles: uploadSuccessFiles,
+    totalFiles: files.length,
+    successCount: uploadSuccessFiles.length,
+    failureCount: allFailedFiles.length
+  };
+  
+  // 실패한 파일이 있으면 추가 정보 포함
+  if (allFailedFiles.length > 0) {
+    responseData.failedFiles = allFailedFiles;
+    responseData.message = `${uploadSuccessFiles.length}개 파일 업로드 성공, ${allFailedFiles.length}개 파일 실패`;
+  }
+
+  return new Response(JSON.stringify(responseData), {
     headers: { 'Content-Type': 'application/json' }
   });
 }
 
-// 이미지 검열 - Gemini API 사용
+// 이미지 검열 - base64 인코딩 사용
 async function handleImageCensorship(file, env) {
   try {
-    const buf = await file.arrayBuffer();
-    const base64 = arrayBufferToBase64(buf);
-    const geminiApiKey = env.GEMINI_API_KEY;
-    if (!geminiApiKey) {
+    console.log(`이미지 크기: ${(file.size / (1024 * 1024)).toFixed(2)}MB`);
+    const dashscopeApiKey = env.DASHSCOPE_API_KEY;
+    if (!dashscopeApiKey) {
       return { ok: false, response: new Response(JSON.stringify({
-          success: false, error: 'Gemini API 키가 설정되지 않았습니다.'
+          success: false, error: 'DashScope API 키가 설정되지 않았습니다.'
         }), { status: 500, headers: { 'Content-Type': 'application/json' } })
       };
     }
 
-    let imageBase64 = base64;
-    if (buf.byteLength > 3 * 1024 * 1024) {
-      try {
-        const dataUrl = `data:${file.type};base64,${base64}`;
-        const resizedResp = await fetch(new Request(dataUrl, {
-          cf: { image: { width: 800, height: 800, fit: "inside" } }
-        }));
-        if (resizedResp.ok) {
-          const resizedBuf = await resizedResp.blob().then(b => b.arrayBuffer());
-          imageBase64 = arrayBufferToBase64(resizedBuf);
-        }
-      } catch (e) {
-        console.log("이미지 리사이징 실패:", e);
-      }
-    }
+    // 이미지를 base64로 인코딩
+    console.log(`[이미지 인코딩] Base64 변환 시작`);
+    const buffer = await file.arrayBuffer();
+    const base64Image = arrayBufferToBase64(buffer);
+    console.log(`[이미지 인코딩] 완료`);
 
+
+    // 검열 요청 - OpenAI 호환 형식
     const requestBody = {
-      contents: [{
-        parts: [
-          { text:
-            "이 비디오에 부적절한 콘텐츠가 포함되어 있는지 확인해주세요. 다음 카테고리에 해당하는 내용이 있으면 true/false로 알려주세요:\n" +
-            "1. 노출/선정적 이미지\n2. 폭력/무기\n3. 약물/알코올\n4. 욕설/혐오 표현\n5. 기타 유해 콘텐츠\n\n발견 시 간단히 설명해주세요. **추가 설명 금지**:\n" +
-            "1. true/false\n" +
-            "2. true/false\n" +
-            "3. true/false\n" +
-            "4. true/false\n" +
-            "5. true/false\n",
-           },
-          { inlineData: { mimeType: file.type, data: imageBase64 } }
-        ]
-      }],
-      generationConfig: { temperature: 0.1, topK: 40, topP: 0.95, maxOutputTokens: 256 }
+      model: 'qwen-vl-max',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text:
+                "Analyze this image for inappropriate content. Be extremely precise and thorough. " +
+                "Look for any attempts to bypass detection through noise, partial covering, artistic filters, or text obfuscation. " +
+                "Also analyze any visible text in the image for inappropriate language, including leetspeak, symbols replacing letters, or intentional misspellings. " +
+                "Rate each category as true (inappropriate) or false (appropriate). Only respond with the number and true/false on each line:\n\n" +
+                "1. Nudity/Sexual content (exposed genitals, sexual acts, suggestive poses): true/false\n" +
+                "2. Partial nudity/Suggestive content (underwear focus, sexual implications, provocative clothing): true/false\n" +
+                "3. Violence/Weapons (guns, knives, violence depiction, weapons display): true/false\n" +
+                "4. Graphic violence/Gore (blood, injuries, death, extreme violence): true/false\n" +
+                "5. Drugs/Alcohol abuse (drug paraphernalia, excessive drinking, drug use): true/false\n" +
+                "6. Hate speech/Offensive language (slurs, hate symbols, discriminatory text): true/false\n" +
+                "7. Harassment/Bullying content (targeting individuals, cyberbullying, intimidation): true/false\n" +
+                "8. Self-harm/Suicide content (cutting, suicide methods, self-injury): true/false\n" +
+                "9. Illegal activities (theft, fraud, illegal substances, criminal acts): true/false\n" +
+                "10. Spam/Scam content (fake offers, phishing, misleading information): true/false\n" +
+                "11. Child exploitation (minors in inappropriate contexts, child endangerment): true/false\n" +
+                "12. Extremist content (terrorist symbols, radical ideologies, dangerous groups): true/false\n\n" +
+                "Be conservative but accurate. Normal everyday content, artistic expression, educational material, " +
+                "and legitimate creative content should be marked as false. Only mark as true if clearly inappropriate."
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:${file.type};base64,${base64Image}`
+              }
+            }
+          ]
+        }
+      ],
+      temperature: 0.05,
+      max_tokens: 400
     };
 
-    const analysis = await callGeminiAPI(geminiApiKey, requestBody);
+    const analysis = await callQwenAPI(dashscopeApiKey, requestBody);
     if (!analysis.success) {
-      return { ok: false, response: new Response(JSON.stringify({
-          success: false, error: `Gemini API 호출 오류: ${analysis.error}`
-        }), { status: 500, headers: { 'Content-Type': 'application/json' } })
-      };
+      throw new Error(analysis.error);
     }
 
     const bad = isInappropriateContent(analysis.text);
+    
+    // 추가 검증: 너무 많은 카테고리가 true로 나온 경우 재검토
+    if (bad.isInappropriate && bad.reasons.length >= 4) {
+      console.log(`[이미지 과도한 검열 감지] ${bad.reasons.length}개 카테고리 검출, 재검토 필요`);
+      
+      // 보수적 재검토 요청
+      const reReviewBody = {
+        model: 'qwen-vl-max',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text:
+                  "Re-examine this image very carefully. Be EXTREMELY conservative and only flag content that is clearly and unambiguously inappropriate. " +
+                  "Many legitimate, artistic, educational, or everyday content should NOT be flagged. " +
+                  "Consider context and intent. Only respond 'INAPPROPRIATE' if you are absolutely certain the content violates guidelines, otherwise respond 'APPROPRIATE'."
+              },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:${file.type};base64,${base64Image}`
+                }
+              }
+            ]
+          }
+        ],
+        temperature: 0.0,
+        max_tokens: 50
+      };
+      
+      const reReview = await callQwenAPI(dashscopeApiKey, reReviewBody);
+      if (reReview.success && reReview.text.toLowerCase().includes('appropriate')) {
+        console.log(`[이미지 재검토 결과] 적절한 콘텐츠로 판정, 통과 처리`);
+        return { ok: true };
+      }
+    }
+    
     if (bad.isInappropriate) {
+      console.log(`[이미지 검열 완료] 부적절한 콘텐츠 감지: ${bad.reasons.join(", ")}`);
       return { ok: false, response: new Response(JSON.stringify({
-          success: false, error: `검열됨: ${bad.reasons.join(", ")}`
+          success: false, error: `업로드가 거부되었습니다. 부적절한 콘텐츠 감지: ${bad.reasons.join(", ")}`
         }), { status: 400, headers: { 'Content-Type': 'application/json' } })
       };
     }
     return { ok: true };
   } catch (e) {
-    console.log("handleImageCensorship error:", e);
+    console.log('handleImageCensorship 오류:', e);
     return { ok: false, response: new Response(JSON.stringify({
         success: false, error: `이미지 검열 중 오류 발생: ${e.message}`
       }), { status: 500, headers: { 'Content-Type': 'application/json' } })
@@ -315,132 +647,117 @@ async function handleImageCensorship(file, env) {
   }
 }
 
-// 동영상 검열 - Gemini Video 파일 업로드 API 사용
+// 동영상 검열 - base64 인코딩 사용
 async function handleVideoCensorship(file, env) {
   try {
     console.log(`비디오 크기: ${(file.size / (1024 * 1024)).toFixed(2)}MB`);
-    const geminiApiKey = env.GEMINI_API_KEY;
-    if (!geminiApiKey) {
+    const dashscopeApiKey = env.DASHSCOPE_API_KEY;
+    if (!dashscopeApiKey) {
       return { ok: false, response: new Response(JSON.stringify({
-          success: false, error: 'Gemini API 키가 설정되지 않았습니다.'
+          success: false, error: 'DashScope API 키가 설정되지 않았습니다.'
         }), { status: 500, headers: { 'Content-Type': 'application/json' } })
       };
     }
 
-    // 1) Resumable upload 시작
-    const startResp = await fetch(
-      `https://generativelanguage.googleapis.com/upload/v1beta/files?uploadType=resumable&key=${geminiApiKey}`,
-      { method: 'POST',
-        headers: {
-          'X-Goog-Upload-Protocol': 'resumable',
-          'X-Goog-Upload-Command': 'start',
-          'X-Goog-Upload-Header-Content-Length': file.size,
-          'X-Goog-Upload-Header-Content-Type': file.type,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ file: { display_name: 'video_upload' } })
-      }
-    );
-    if (!startResp.ok) {
-      const err = await startResp.text();
-      throw new Error(`Resumable upload start 실패: ${startResp.status} ${err}`);
-    }
-    let uploadUrl =
-      startResp.headers.get('X-Goog-Upload-URL') ||
-      startResp.headers.get('Location');
 
-    if (!uploadUrl) {
-      // Response 본문을 두 번 읽으려면 clone() 사용
-      const cloneForJson = startResp.clone();
-      const cloneForText = startResp.clone();
 
-      // JSON 바디에서 가능한 필드 확인
-      const json = await cloneForJson.json().catch(() => null);
-      uploadUrl = json?.uploadUri || json?.uploadUrl || json?.resumableUri;
-
-      if (!uploadUrl) {
-        const hdrs = [...startResp.headers]
-          .map(([k, v]) => `${k}: ${v}`)
-          .join('\n');
-        const textBody = await cloneForText.text().catch(() => '');
-        throw new Error(
-          `Resumable 업로드 URL을 가져올 수 없습니다.\n응답 헤더:\n${hdrs}\n응답 바디:\n${textBody}`
-        );
-      }
-    }
-
-    // 2) 파일 업로드 및 finalize
+    // 비디오를 base64로 인코딩
+    console.log(`[동영상 인코딩] Base64 변환 시작`);
     const buffer = await file.arrayBuffer();
-    const uploadResp = await fetch(uploadUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Length': file.size,
-        'X-Goog-Upload-Offset': '0',
-        'X-Goog-Upload-Command': 'upload, finalize'
-      },
-      body: buffer
-    });
-    if (!uploadResp.ok) {
-      const err = await uploadResp.text();
-      throw new Error(`비디오 업로드 실패: ${uploadResp.status} ${err}`);
-    }
+    const base64Video = arrayBufferToBase64(buffer);
+    console.log(`[동영상 인코딩] 완료`);
 
-    // 3) 업로드 완료 응답에서 resource name 추출
-    const uploadResult = await uploadResp.json();
-    // file 객체 내부의 name 필드를 사용합니다.
-       const resourceName = uploadResult.file?.name;
-        if (!resourceName) {
-         throw new Error(
-           `업로드 완료 후 resource name을 확인할 수 없습니다. 응답: ${JSON.stringify(uploadResult)}`
-         );
-      }
-    // 4) 처리 완료 대기 (PROCESSING → ACTIVE)
-    const statusUrl = uploadResult.file?.uri + `?key=${env.GEMINI_API_KEY}`;
-    let statusResp = await fetch(statusUrl);
-    if (!statusResp.ok) {
-      throw new Error(`파일 상태 조회 실패: ${statusResp.status}`);
-    }
-    let myfile = await statusResp.json();
-    while (myfile.state === 'PROCESSING') {
-      console.log('비디오 처리 중...');
-      await new Promise(r => setTimeout(r, 5000));
-      statusResp = await fetch(statusUrl);
-      if (!statusResp.ok) {
-        throw new Error(`파일 상태 조회 실패: ${statusResp.status}`);
-      }
-      myfile = await statusResp.json();
-    }
-    if (myfile.state !== 'ACTIVE') {
-      throw new Error(`비디오 파일이 활성 상태가 아닙니다: ${myfile.state}`);
-    }
 
-    // 5) 검열 요청
-    const fileUri = uploadResult.file.uri;
+    // 검열 요청 - OpenAI 호환 형식
     const requestBody = {
-      contents: [{
-        parts: [
-          { text:
-              "이 비디오에 부적절한 콘텐츠가 포함되어 있는지 확인해주세요. 다음 카테고리에 해당하는 내용이 있으면 true/false로 알려주세요:\n" +
-              "1. 노출/선정적 이미지\n2. 폭력/무기\n3. 약물/알코올\n4. 욕설/혐오 표현\n5. 기타 유해 콘텐츠\n\n발견 시 간단히 설명해주세요. **추가 설명 금지**:\n" +
-              "1. true/false\n" +
-              "2. true/false\n" +
-              "3. true/false\n" +
-              "4. true/false\n" +
-              "5. true/false\n",
-             },
-          { file_data: { mime_type: file.type, file_uri: fileUri } }
-        ]
-      }],
-      generationConfig: { temperature: 0.1, topK: 40, topP: 0.95, maxOutputTokens: 256 }
+      model: 'qwen-vl-max',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text:
+                "Analyze this video for inappropriate content frame by frame. Be extremely precise and thorough. " +
+                "Look for any attempts to bypass detection through quick flashes, partial covering, artistic filters, blurring, or text obfuscation. " +
+                "Analyze any visible text or audio for inappropriate language, including leetspeak, symbols replacing letters, or intentional misspellings. " +
+                "Consider the entire video duration and any content that appears briefly. " +
+                "Rate each category as true (inappropriate) or false (appropriate). Only respond with the number and true/false on each line:\n\n" +
+                "1. Nudity/Sexual content (exposed genitals, sexual acts, suggestive poses): true/false\n" +
+                "2. Partial nudity/Suggestive content (underwear focus, sexual implications, provocative clothing): true/false\n" +
+                "3. Violence/Weapons (guns, knives, violence depiction, weapons display): true/false\n" +
+                "4. Graphic violence/Gore (blood, injuries, death, extreme violence): true/false\n" +
+                "5. Drugs/Alcohol abuse (drug paraphernalia, excessive drinking, drug use): true/false\n" +
+                "6. Hate speech/Offensive language (slurs, hate symbols, discriminatory text or audio): true/false\n" +
+                "7. Harassment/Bullying content (targeting individuals, cyberbullying, intimidation): true/false\n" +
+                "8. Self-harm/Suicide content (cutting, suicide methods, self-injury): true/false\n" +
+                "9. Illegal activities (theft, fraud, illegal substances, criminal acts): true/false\n" +
+                "10. Spam/Scam content (fake offers, phishing, misleading information): true/false\n" +
+                "11. Child exploitation (minors in inappropriate contexts, child endangerment): true/false\n" +
+                "12. Extremist content (terrorist symbols, radical ideologies, dangerous groups): true/false\n\n" +
+                "Be conservative but accurate. Normal everyday content, artistic expression, educational material, " +
+                "gaming content, and legitimate creative content should be marked as false. Only mark as true if clearly inappropriate."
+            },
+            {
+              type: 'video_url',
+              video_url: {
+                url: `data:${file.type};base64,${base64Video}`
+              }
+            }
+          ]
+        }
+      ],
+      temperature: 0.05,
+      max_tokens: 400
     };
-    const analysis = await callGeminiAPI(geminiApiKey, requestBody);
+    const analysis = await callQwenAPI(dashscopeApiKey, requestBody);
     if (!analysis.success) {
       throw new Error(analysis.error);
     }
     const bad = isInappropriateContent(analysis.text);
+    
+    // 추가 검증: 너무 많은 카테고리가 true로 나온 경우 재검토
+    if (bad.isInappropriate && bad.reasons.length >= 4) {
+      console.log(`[비디오 과도한 검열 감지] ${bad.reasons.length}개 카테고리 검출, 재검토 필요`);
+      
+      // 보수적 재검토 요청
+      const reReviewBody = {
+        model: 'qwen-vl-max',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text:
+                  "Re-examine this video very carefully. Be EXTREMELY conservative and only flag content that is clearly and unambiguously inappropriate. " +
+                  "Many legitimate, artistic, educational, gaming, or everyday content should NOT be flagged. " +
+                  "Consider context and intent. Only respond 'INAPPROPRIATE' if you are absolutely certain the content violates guidelines, otherwise respond 'APPROPRIATE'."
+              },
+              {
+                type: 'video_url',
+                video_url: {
+                  url: `data:${file.type};base64,${base64Video}`
+                }
+              }
+            ]
+          }
+        ],
+        temperature: 0.0,
+        max_tokens: 50
+      };
+      
+      const reReview = await callQwenAPI(dashscopeApiKey, reReviewBody);
+      if (reReview.success && reReview.text.toLowerCase().includes('appropriate')) {
+        console.log(`[비디오 재검토 결과] 적절한 콘텐츠로 판정, 통과 처리`);
+        return { ok: true };
+      }
+    }
+    
     if (bad.isInappropriate) {
+      console.log(`[비디오 검열 완료] 부적절한 콘텐츠 감지: ${bad.reasons.join(", ")}`);
       return { ok: false, response: new Response(JSON.stringify({
-          success: false, error: `검열됨: ${bad.reasons.join(', ')}`
+          success: false, error: `업로드가 거부되었습니다. 부적절한 콘텐츠 감지: ${bad.reasons.join(', ')}`
         }), { status: 400, headers: { 'Content-Type': 'application/json' } }) };
     }
     return { ok: true };
@@ -452,16 +769,19 @@ async function handleVideoCensorship(file, env) {
   }
 }
 
-// Gemini API 호출 함수
-async function callGeminiAPI(apiKey, requestBody) {
+// Qwen API 호출 함수
+async function callQwenAPI(apiKey, requestBody) {
   let retryCount = 0;
   const maxRetries = 3, retryDelay = 2000;
   while (retryCount < maxRetries) {
     try {
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${apiKey}`;
+      const apiUrl = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions';
       const response = await fetch(apiUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
         body: JSON.stringify(requestBody)
       });
       if (!response.ok) {
@@ -471,13 +791,37 @@ async function callGeminiAPI(apiKey, requestBody) {
           await new Promise(r => setTimeout(r, retryDelay));
           continue;
         }
+        console.log('Qwen API 호출 실패:', {
+          status: response.status,
+          statusText: response.statusText,
+          headers: Object.fromEntries([...response.headers])
+        });
         const errText = await response.text();
-        return { success: false, error: `API 오류 (${response.status}): ${errText}` };
+        return { success: false, error: `API 오류 (${response.status}): ${response.statusText}` };
       }
       const data = await response.json();
-      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!content) return { success: false, error: '유효하지 않은 Gemini API 응답' };
-      return { success: true, text: content };
+      
+      // Qwen API OpenAI 호환 응답 구조 처리
+      const choice = data.choices?.[0];
+      if (!choice?.message?.content) {
+        console.log('Qwen API 응답 상태:', {
+          hasChoices: !!data.choices,
+          choicesLength: data.choices?.length || 0,
+          hasMessage: !!choice?.message,
+          hasContent: !!choice?.message?.content,
+          responseKeys: Object.keys(data || {})
+        });
+        return { success: false, error: 'Qwen API에서 유효한 응답을 받지 못했습니다. API 키 또는 요청 형식을 확인해주세요.' };
+      }
+
+      const responseText = choice.message.content;
+
+      if (!responseText) {
+        console.log('Qwen API 응답 파싱 실패: 빈 응답');
+        return { success: false, error: 'Qwen API 응답에서 텍스트를 추출할 수 없습니다.' };
+      }
+
+      return { success: true, text: responseText };
     } catch (e) {
       retryCount++;
       console.log(`API 호출 오류, 재시도 ${retryCount}/${maxRetries}:`, e);
@@ -492,24 +836,57 @@ async function callGeminiAPI(apiKey, requestBody) {
 }
 
 // =======================
-// 부적절한 내용 분석 함수 (교체 버전)
+// 부적절한 내용 분석 함수 (강화된 버전)
 // =======================
 function isInappropriateContent(responseText) {
-  // 카테고리 인덱스 → 사용자 표시용 이름 매핑
+  // 카테고리 인덱스 → 사용자 표시용 이름 매핑 (한국어)
   const categoryMap = {
-    1: '선정적 콘텐츠',
-    2: '폭력/무기 콘텐츠',
-    3: '약물/알코올 관련 콘텐츠',
-    4: '욕설/혐오 표현',
-    5: '기타 유해 콘텐츠'
+    1: '성적/노출 콘텐츠',
+    2: '부분적 노출/선정적 콘텐츠',
+    3: '폭력/무기 콘텐츠',
+    4: '극단적 폭력/고어 콘텐츠',
+    5: '약물/알코올 남용 콘텐츠',
+    6: '혐오 발언/욕설',
+    7: '괴롭힘/따돌림 콘텐츠',
+    8: '자해/자살 관련 콘텐츠',
+    9: '불법 활동',
+    10: '스팸/사기 콘텐츠',
+    11: '아동 착취',
+    12: '극단주의 콘텐츠'
   };
 
   // 결과 저장소
   const flagged = [];
 
-  // 응답을 줄별로 순회하며 "숫자. true/false" 패턴만 파싱
-  responseText.split(/\r?\n/).forEach(line => {
-    const m = line.match(/^\s*([1-5])\.\s*(true|false)\b/i);
+  // 응답을 줄별로 순회하며 다양한 패턴 파싱
+  responseText.split(/\r?\n/).forEach((line, lineIndex) => {
+    // 패턴 1: "숫자. true/false" 형태
+    let m = line.match(/^\s*([1-9]|1[0-2])\.\s*(true|false)\b/i);
+    if (!m) {
+      // 패턴 2: "숫자: true/false" 형태
+      m = line.match(/^\s*([1-9]|1[0-2]):\s*(true|false)\b/i);
+    }
+    if (!m) {
+      // 패턴 3: "숫자 - true/false" 형태
+      m = line.match(/^\s*([1-9]|1[0-2])\s*[-–]\s*(true|false)\b/i);
+    }
+    if (!m) {
+      // 패턴 4: "숫자) true/false" 형태
+      m = line.match(/^\s*([1-9]|1[0-2])\)\s*(true|false)\b/i);
+    }
+    if (!m) {
+      // 패턴 5: 단순히 "true" 또는 "false"만 있는 경우 (순서대로 1-12 매핑)
+      const trueMatch = line.match(/^\s*(true|false)\b/i);
+      if (trueMatch) {
+        // 실제 내용이 있는 줄들만 카운트
+        const contentLines = responseText.split(/\r?\n/).filter(l => l.trim().match(/^\s*(true|false)\b/i));
+        const contentLineIndex = contentLines.indexOf(line.trim());
+        if (contentLineIndex >= 0 && contentLineIndex < 12) {
+          m = [null, (contentLineIndex + 1).toString(), trueMatch[1]];
+        }
+      }
+    }
+    
     if (m) {
       const idx = Number(m[1]);
       const val = m[2].toLowerCase() === 'true';
@@ -676,23 +1053,96 @@ function renderHTML(mediaTags, host) {
       max-width: 40vw;
       cursor: zoom-in;
     }
-  
-    #imageContainer img.expanded.landscape,
-    #imageContainer video.expanded.landscape {
-      width: 80vw;
-      height: auto;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
+
+    /* 전체화면 모달 스타일 */
+    .image-modal {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.9);
     }
-  
-    #imageContainer img.expanded.portrait,
-    #imageContainer video.expanded.portrait {
-      width: auto;
-      height: 100vh;
-      max-width: 80vw;
-      max-height: 100vh;
-      cursor: zoom-out;
+
+    .modal-content {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+         .modal-image {
+       max-width: 90%;
+       max-height: 90%;
+       transform-origin: center;
+       transition: transform 0.3s ease;
+       cursor: grab;
+       touch-action: manipulation; /* 모바일 더블탭 확대 방지 */
+       user-select: none; /* 텍스트 선택 방지 */
+       -webkit-user-select: none;
+       -moz-user-select: none;
+       -ms-user-select: none;
+     }
+
+     .modal-image:active {
+       cursor: grabbing;
+     }
+
+     .modal-image.dragging {
+       transition: none; /* 드래그 중 애니메이션 제거 */
+       cursor: grabbing;
+     }
+
+    /* 컨트롤 패널 */
+    .modal-controls {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 10px;
+      border-radius: 25px;
+    }
+
+    .control-btn {
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      color: white;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      transition: background 0.3s ease;
+    }
+
+    .control-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
+    /* 닫기 버튼 */
+    .modal-close {
+      position: absolute;
+      top: 20px;
+      right: 30px;
+      color: white;
+      font-size: 40px;
+      font-weight: bold;
+      cursor: pointer;
+      z-index: 1001;
+    }
+
+    .modal-close:hover {
+      opacity: 0.7;
     }
   
     .container {
@@ -796,6 +1246,22 @@ function renderHTML(mediaTags, host) {
   <div id="imageContainer">
     ${mediaTags}
   </div>
+  
+  <!-- 전체화면 이미지 모달 -->
+  <div id="imageModal" class="image-modal">
+    <span class="modal-close" id="modalClose">&times;</span>
+    <div class="modal-content">
+      <img id="modalImage" class="modal-image" src="" alt="확대된 이미지" draggable="false">
+      <div class="modal-controls">
+        <button class="control-btn" id="zoomIn" title="확대">+</button>
+        <button class="control-btn" id="zoomOut" title="축소">-</button>
+        <button class="control-btn" id="rotateLeft" title="왼쪽 회전">↶</button>
+        <button class="control-btn" id="rotateRight" title="오른쪽 회전">↷</button>
+        <button class="control-btn" id="resetView" title="원래 크기">⟲</button>
+      </div>
+    </div>
+  </div>
+  
   <div class="custom-context-menu" id="customContextMenu" style="display: none;">
       <button id="copyImage">이미지 복사</button>
       <button id="copyImageurl">이미지 링크 복사</button>
@@ -803,21 +1269,192 @@ function renderHTML(mediaTags, host) {
       <button id="downloadImagepng">png로 다운로드</button>
   </div>
   <script>
-    function toggleZoom(elem) {
-      if (!elem.classList.contains('landscape') && !elem.classList.contains('portrait')) {
-        let width=0, height=0;
-        if (elem.tagName.toLowerCase()==='img') {
-          width=elem.naturalWidth; height=elem.naturalHeight;
-        } else if (elem.tagName.toLowerCase()==='video') {
-          width=elem.videoWidth; height=elem.videoHeight;
-        }
-        if(width && height){
-          if(width>=height) elem.classList.add('landscape');
-          else elem.classList.add('portrait');
+    // 새로운 이미지 뷰어 기능
+    class ImageViewer {
+      constructor() {
+        this.modal = document.getElementById('imageModal');
+        this.modalImage = document.getElementById('modalImage');
+        this.closeBtn = document.getElementById('modalClose');
+        this.zoomInBtn = document.getElementById('zoomIn');
+        this.zoomOutBtn = document.getElementById('zoomOut');
+        this.rotateLeftBtn = document.getElementById('rotateLeft');
+        this.rotateRightBtn = document.getElementById('rotateRight');
+        this.resetBtn = document.getElementById('resetView');
+        
+        this.scale = 1;
+        this.rotation = 0;
+        this.posX = 0;
+        this.posY = 0;
+        this.isDragging = false;
+        this.startX = 0;
+        this.startY = 0;
+        
+        this.init();
+      }
+      
+      init() {
+        // 이벤트 리스너 등록
+        this.closeBtn.addEventListener('click', () => this.closeModal());
+        this.modal.addEventListener('click', (e) => {
+          if (e.target === this.modal) this.closeModal();
+        });
+        
+        // 컨트롤 버튼 이벤트
+        this.zoomInBtn.addEventListener('click', () => this.zoomIn());
+        this.zoomOutBtn.addEventListener('click', () => this.zoomOut());
+        this.rotateLeftBtn.addEventListener('click', () => this.rotateLeft());
+        this.rotateRightBtn.addEventListener('click', () => this.rotateRight());
+        this.resetBtn.addEventListener('click', () => this.resetView());
+        
+                 // 마우스 드래그 이벤트
+         this.modalImage.addEventListener('mousedown', (e) => this.startDrag(e));
+         document.addEventListener('mousemove', (e) => this.drag(e));
+         document.addEventListener('mouseup', () => this.endDrag());
+         
+         // 터치 드래그 이벤트 (모바일)
+         this.modalImage.addEventListener('touchstart', (e) => this.startTouch(e));
+         document.addEventListener('touchmove', (e) => this.touchMove(e));
+         document.addEventListener('touchend', () => this.endDrag());
+         
+         // 브라우저 기본 드래그 및 더블탭 확대 방지
+         this.modalImage.addEventListener('dragstart', (e) => e.preventDefault());
+         this.modalImage.addEventListener('gesturestart', (e) => e.preventDefault());
+         this.modalImage.addEventListener('gesturechange', (e) => e.preventDefault());
+         this.modalImage.addEventListener('gestureend', (e) => e.preventDefault());
+        
+        // 마우스 휠로 확대/축소
+        this.modalImage.addEventListener('wheel', (e) => this.handleWheel(e));
+        
+        // ESC 키로 닫기
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && this.modal.style.display === 'block') {
+            this.closeModal();
+          }
+        });
+        
+        // 이미지 클릭 이벤트 등록
+        this.setupImageClickHandlers();
+      }
+      
+      setupImageClickHandlers() {
+        document.querySelectorAll('#imageContainer img').forEach(img => {
+          this.addClickHandler(img);
+        });
+      }
+      
+      addClickHandler(img) {
+        img.addEventListener('click', (e) => {
+          e.preventDefault();
+          this.openModal(img.src);
+        });
+      }
+      
+      openModal(imageSrc) {
+        this.modalImage.src = imageSrc;
+        this.modal.style.display = 'block';
+        this.resetView();
+        document.body.style.overflow = 'hidden';
+      }
+      
+      closeModal() {
+        this.modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+      }
+      
+      zoomIn() {
+        this.scale = Math.min(this.scale * 1.2, 5);
+        this.updateTransform();
+      }
+      
+      zoomOut() {
+        this.scale = Math.max(this.scale / 1.2, 0.1);
+        this.updateTransform();
+      }
+      
+      rotateLeft() {
+        this.rotation -= 90;
+        this.updateTransform();
+      }
+      
+      rotateRight() {
+        this.rotation += 90;
+        this.updateTransform();
+      }
+      
+      resetView() {
+        this.scale = 1;
+        this.rotation = 0;
+        this.posX = 0;
+        this.posY = 0;
+        this.updateTransform();
+      }
+      
+             startDrag(e) {
+         if (this.scale > 1) {
+           this.isDragging = true;
+           this.startX = e.clientX - this.posX;
+           this.startY = e.clientY - this.posY;
+           this.modalImage.classList.add('dragging');
+           e.preventDefault();
+         }
+       }
+       
+       startTouch(e) {
+         if (this.scale > 1 && e.touches.length === 1) {
+           this.isDragging = true;
+           const touch = e.touches[0];
+           this.startX = touch.clientX - this.posX;
+           this.startY = touch.clientY - this.posY;
+           this.modalImage.classList.add('dragging');
+           e.preventDefault();
+         }
+       }
+       
+       drag(e) {
+         if (this.isDragging) {
+           this.posX = e.clientX - this.startX;
+           this.posY = e.clientY - this.startY;
+           this.updateTransform();
+         }
+       }
+       
+       touchMove(e) {
+         if (this.isDragging && e.touches.length === 1) {
+           const touch = e.touches[0];
+           this.posX = touch.clientX - this.startX;
+           this.posY = touch.clientY - this.startY;
+           this.updateTransform();
+           e.preventDefault();
+         }
+       }
+       
+       endDrag() {
+         if (this.isDragging) {
+           this.isDragging = false;
+           this.modalImage.classList.remove('dragging');
+         }
+       }
+      
+      handleWheel(e) {
+        e.preventDefault();
+        if (e.deltaY < 0) {
+          this.zoomIn();
+        } else {
+          this.zoomOut();
         }
       }
-      elem.classList.toggle('expanded');
+      
+      updateTransform() {
+        const transform = \`translate(\${this.posX}px, \${this.posY}px) scale(\${this.scale}) rotate(\${this.rotation}deg)\`;
+        this.modalImage.style.transform = transform;
+      }
     }
+    
+    // 이미지 뷰어 초기화
+    document.addEventListener('DOMContentLoaded', () => {
+      new ImageViewer();
+    });
+    
     document.getElementById('toggleButton')?.addEventListener('click',function(){
       window.location.href='/';
     });
@@ -1070,6 +1707,25 @@ function renderApiDocs(host) {
   "success": false,
   "error": "검열 처리 중 오류: [오류 메시지]"
 }</pre>
+    
+    <p>레이트 리미팅 (429 Too Many Requests):</p>
+    <pre>{
+  "success": false,
+  "error": "보안상 업로드가 제한되었습니다. 1분 내 20개 초과 업로드로 인한 5분 차단. 300초 후 다시 시도하세요.",
+  "rateLimited": true,
+  "remainingTime": 300
+}</pre>
+  </div>
+  
+  <h2>레이트 리미팅</h2>
+  <div class="endpoint">
+    <h3>업로드 제한</h3>
+    <p>보안을 위해 다음과 같은 레이트 리미팅이 적용됩니다:</p>
+    <ul>
+      <li><strong>1분 제한:</strong> 동일한 IP에서 1분 내 20개 이상 업로드 시 5분간 차단</li>
+      <li><strong>1시간 제한:</strong> 동일한 IP에서 1시간 내 100개 이상 업로드 시 1시간 차단</li>
+    </ul>
+    <p>제한 초과 시 HTTP 429 상태 코드와 함께 차단 해제까지 남은 시간이 응답됩니다.</p>
   </div>
   
   <h2>코드 예제</h2>
