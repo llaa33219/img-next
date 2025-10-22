@@ -164,10 +164,47 @@ async function handleGetRequest(request, env, url) {
     
     // raw=1 파라미터가 있으면 첫 번째 파일만 raw로 반환
     if (url.searchParams.get('raw') === '1') {
-      const object = await env.IMAGES.get(codes[0]);
+      const code = codes[0];
+      const rangeHeader = request.headers.get('Range');
+      
+      // Range 요청 처리 (비디오 시간 이동을 위해 필요)
+      if (rangeHeader) {
+        const rangeMatch = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+        if (rangeMatch) {
+          const start = parseInt(rangeMatch[1]);
+          
+          // 먼저 전체 파일 정보를 가져와서 전체 크기 확인
+          const fullObject = await env.IMAGES.get(code);
+          if (!fullObject) return new Response('Not Found', { status: 404 });
+          
+          const totalSize = fullObject.size;
+          const end = rangeMatch[2] ? parseInt(rangeMatch[2]) : totalSize - 1;
+          const length = end - start + 1;
+          
+          // Range 요청으로 해당 부분만 가져오기
+          const object = await env.IMAGES.get(code, {
+            range: { offset: start, length: length }
+          });
+          
+          if (!object) return new Response('Not Found', { status: 404 });
+          
+          const headers = new Headers();
+          headers.set('Content-Type', fullObject.httpMetadata?.contentType || 'application/octet-stream');
+          headers.set('Accept-Ranges', 'bytes');
+          headers.set('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+          headers.set('Content-Length', length.toString());
+          
+          return new Response(object.body, { status: 206, headers });
+        }
+      }
+      
+      // Range 요청이 없으면 전체 파일 반환
+      const object = await env.IMAGES.get(code);
       if (!object) return new Response('Not Found', { status: 404 });
       const headers = new Headers();
       headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
+      headers.set('Accept-Ranges', 'bytes');
+      headers.set('Content-Length', object.size.toString());
       return new Response(object.body, { headers });
     }
     
@@ -180,7 +217,7 @@ async function handleGetRequest(request, env, url) {
     let mediaTags = "";
     for (const { code, object } of objects) {
       if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
-        mediaTags += `<video src="https://${url.host}/${code}?raw=1"></video>\n`;
+        mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls preload="auto"></video>\n`;
       } else {
         mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media">\n`;
       }
@@ -194,21 +231,60 @@ async function handleGetRequest(request, env, url) {
   // 단일 코드 처리
   else {
     const key = decodeURIComponent(url.pathname.slice(1));
-    const object = await env.IMAGES.get(key);
-    if (!object) return new Response('Not Found', { status: 404 });
     
     // raw=1 파라미터가 있으면 파일 자체를 반환
     if (url.searchParams.get('raw') === '1') {
+      const rangeHeader = request.headers.get('Range');
+      
+      // Range 요청 처리 (비디오 시간 이동을 위해 필요)
+      if (rangeHeader) {
+        const rangeMatch = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+        if (rangeMatch) {
+          const start = parseInt(rangeMatch[1]);
+          
+          // 먼저 전체 파일 정보를 가져와서 전체 크기 확인
+          const fullObject = await env.IMAGES.get(key);
+          if (!fullObject) return new Response('Not Found', { status: 404 });
+          
+          const totalSize = fullObject.size;
+          const end = rangeMatch[2] ? parseInt(rangeMatch[2]) : totalSize - 1;
+          const length = end - start + 1;
+          
+          // Range 요청으로 해당 부분만 가져오기
+          const object = await env.IMAGES.get(key, {
+            range: { offset: start, length: length }
+          });
+          
+          if (!object) return new Response('Not Found', { status: 404 });
+          
+          const headers = new Headers();
+          headers.set('Content-Type', fullObject.httpMetadata?.contentType || 'application/octet-stream');
+          headers.set('Accept-Ranges', 'bytes');
+          headers.set('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+          headers.set('Content-Length', length.toString());
+          
+          return new Response(object.body, { status: 206, headers });
+        }
+      }
+      
+      // Range 요청이 없으면 전체 파일 반환
+      const object = await env.IMAGES.get(key);
+      if (!object) return new Response('Not Found', { status: 404 });
       const headers = new Headers();
       headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
+      headers.set('Accept-Ranges', 'bytes');
+      headers.set('Content-Length', object.size.toString());
       return new Response(object.body, { headers });
     } 
     
     // HTML로 렌더링
     else {
+      const object = await env.IMAGES.get(key);
+      if (!object) return new Response('Not Found', { status: 404 });
+      
       let mediaTag = "";
       if (object.httpMetadata?.contentType?.startsWith('video/')) {
-        mediaTag = `<video src="https://${url.host}/${key}?raw=1"></video>\n`;
+        mediaTag = `<video src="https://${url.host}/${key}?raw=1" controls preload="auto"></video>\n`;
       } else {
         mediaTag = `<img src="https://${url.host}/${key}?raw=1" alt="Uploaded Media">\n`;
       }
