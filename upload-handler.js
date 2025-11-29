@@ -24,7 +24,7 @@ export async function handleUpload(request, env) {
   }
 
   const allowedImageTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-  const allowedVideoTypes = ["video/mp4", "video/webm", "video/ogg", "video/x-msvideo", "video/avi", "video/msvideo"];
+  const allowedVideoTypes = ["video/mp4", "video/webm", "video/ogg", "video/x-msvideo", "video/avi", "video/msvideo", "video/quicktime"];
   for (const file of files) {
     if (file.type.startsWith('image/')) {
       if (!allowedImageTypes.includes(file.type)) {
@@ -40,7 +40,8 @@ export async function handleUpload(request, env) {
       }
     } else {
       return new Response(JSON.stringify({ success: false, error: '지원하지 않는 파일 형식입니다.' }), {
-        status: 400, headers: { 'Content-Type': 'application/json' } });
+        status: 400, headers: { 'Content-Type': 'application/json' }
+      });
     }
   }
 
@@ -48,16 +49,16 @@ export async function handleUpload(request, env) {
   console.log(`[검열 시작] ${files.length}개 파일 검열 시작`);
   const validFiles = [];
   const failedFiles = [];
-  
+
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     console.log(`[검열 진행] ${i + 1}/${files.length} - ${file.name || 'Unknown'}, ${file.type}, ${(file.size / 1024 / 1024).toFixed(2)}MB`);
-    
+
     try {
       const r = file.type.startsWith('image/')
         ? await handleImageCensorship(file, env)
         : await handleVideoCensorship(file, env);
-        
+
       if (!r.ok) {
         console.log(`[검열 실패] ${i + 1}번째 파일에서 검열 실패`);
         // 기존 응답에서 에러 메시지 추출
@@ -69,14 +70,14 @@ export async function handleUpload(request, env) {
         } catch (e) {
           console.log('에러 메시지 파싱 실패:', e);
         }
-        
-        const fileInfo = { 
-          index: i + 1, 
-          name: file.name || 'Unknown', 
-          error: errorMessage 
+
+        const fileInfo = {
+          index: i + 1,
+          name: file.name || 'Unknown',
+          error: errorMessage
         };
         failedFiles.push(fileInfo);
-        
+
         // 단일 파일 업로드시에만 즉시 중단
         if (files.length === 1) {
           return new Response(JSON.stringify({
@@ -90,13 +91,13 @@ export async function handleUpload(request, env) {
       }
     } catch (e) {
       console.log(`[검열 오류] ${i + 1}번째 파일 검열 중 오류:`, e);
-      const fileInfo = { 
-        index: i + 1, 
-        name: file.name || 'Unknown', 
-        error: `검열 중 오류: ${e.message}` 
+      const fileInfo = {
+        index: i + 1,
+        name: file.name || 'Unknown',
+        error: `검열 중 오류: ${e.message}`
       };
       failedFiles.push(fileInfo);
-      
+
       // 단일 파일 업로드시에만 즉시 중단
       if (files.length === 1) {
         return new Response(JSON.stringify({
@@ -106,9 +107,9 @@ export async function handleUpload(request, env) {
       }
     }
   }
-  
+
   console.log(`[검열 완료] ${validFiles.length}개 파일 검열 통과, ${failedFiles.length}개 파일 실패`);
-  
+
   // 모든 파일이 실패한 경우
   if (validFiles.length === 0) {
     return new Response(JSON.stringify({
@@ -122,7 +123,7 @@ export async function handleUpload(request, env) {
   let codes = [];
   const uploadSuccessFiles = [];
   const uploadFailedFiles = [];
-  
+
   if (customName && validFiles.length === 1) {
     customName = customName.replace(/ /g, "_");
     try {
@@ -176,7 +177,7 @@ export async function handleUpload(request, env) {
           name: file.name || 'Unknown',
           error: `업로드 실패: ${e.message}`
         });
-        
+
         // 단일 파일 업로드시에만 즉시 중단
         if (validFiles.length === 1) {
           return new Response(JSON.stringify({
@@ -188,7 +189,7 @@ export async function handleUpload(request, env) {
     }
     console.log(`[R2 업로드] ${uploadSuccessFiles.length}개 파일 업로드 성공, ${uploadFailedFiles.length}개 파일 업로드 실패`);
   }
-  
+
   // 모든 업로드가 실패한 경우
   if (codes.length === 0) {
     return new Response(JSON.stringify({
@@ -205,10 +206,10 @@ export async function handleUpload(request, env) {
 
   // 전체 실패한 파일 목록 (검열 실패 + 업로드 실패)
   const allFailedFiles = [...failedFiles, ...uploadFailedFiles];
-  
+
   // API 응답에 성공/실패 정보 포함
-  const responseData = { 
-    success: codes.length > 0, 
+  const responseData = {
+    success: codes.length > 0,
     url: finalUrl,
     rawUrls: rawUrls,
     codes: codes,
@@ -217,7 +218,7 @@ export async function handleUpload(request, env) {
     successCount: uploadSuccessFiles.length,
     failureCount: allFailedFiles.length
   };
-  
+
   // 실패한 파일이 있으면 추가 정보 포함
   if (allFailedFiles.length > 0) {
     responseData.failedFiles = allFailedFiles;
