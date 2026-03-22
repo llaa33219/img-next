@@ -3,6 +3,22 @@
 // ==============================
 
 /**
+ * HTML 이스케이프 - XSS 방지
+ * @param {string} str - 이스케이프할 문자열
+ * @returns {string} - 이스케이프된 문자열
+ */
+export function escapeHtml(str) {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;')
+    .replace(/\//g, '&#x2F;');
+}
+
+/**
  * ArrayBuffer를 base64 문자열로 변환
  * @param {ArrayBuffer} buffer - 변환할 버퍼
  * @returns {string} - base64 인코딩된 문자열

@@ -4,7 +4,7 @@
 
 import { checkRateLimit, cleanupOldData } from './rate-limiter.js';
 import { handleUpload } from './upload-handler.js';
-import { addCorsHeaders } from './utils.js';
+import { addCorsHeaders, escapeHtml } from './utils.js';
 import { renderHTML, renderApiDocs } from './html-templates.js';
 
 // ==============================
@@ -216,10 +216,11 @@ async function handleGetRequest(request, env, url) {
     
     let mediaTags = "";
     for (const { code, object } of objects) {
+      const safeCode = escapeHtml(code);
       if (object && object.httpMetadata?.contentType?.startsWith('video/')) {
-        mediaTags += `<video src="https://${url.host}/${code}?raw=1" controls preload="auto"></video>\n`;
+        mediaTags += `<video src="https://${url.host}/${safeCode}?raw=1" controls preload="auto"></video>\n`;
       } else {
-        mediaTags += `<img src="https://${url.host}/${code}?raw=1" alt="Uploaded Media">\n`;
+        mediaTags += `<img src="https://${url.host}/${safeCode}?raw=1" alt="Uploaded Media">\n`;
       }
     }
     
@@ -283,10 +284,11 @@ async function handleGetRequest(request, env, url) {
       if (!object) return new Response('Not Found', { status: 404 });
       
       let mediaTag = "";
+      const safeKey = escapeHtml(key);
       if (object.httpMetadata?.contentType?.startsWith('video/')) {
-        mediaTag = `<video src="https://${url.host}/${key}?raw=1" controls preload="auto"></video>\n`;
+        mediaTag = `<video src="https://${url.host}/${safeKey}?raw=1" controls preload="auto"></video>\n`;
       } else {
-        mediaTag = `<img src="https://${url.host}/${key}?raw=1" alt="Uploaded Media">\n`;
+        mediaTag = `<img src="https://${url.host}/${safeKey}?raw=1" alt="Uploaded Media">\n`;
       }
       return new Response(renderHTML(mediaTag, url.host), {
         headers: { 'Content-Type': 'text/html; charset=UTF-8' }
