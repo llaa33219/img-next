@@ -133,7 +133,7 @@ export async function handleImageCensorship(file, env) {
 
     // 검열 요청 - OpenAI 호환 형식
     const requestBody = {
-      model: 'qwen3.5-397b-a17b',
+      model: 'qwen3.6-plus',
       messages: [
         {
           role: 'user',
@@ -168,8 +168,7 @@ export async function handleImageCensorship(file, env) {
           ]
         }
       ],
-      temperature: 0.1,
-      max_tokens: 400
+      "enable_thinking": true
     };
 
     console.log(`[이미지 검열 API 요청] URL: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions`);
@@ -265,7 +264,7 @@ export async function handleVideoCensorship(file, env) {
 
     // 검열 요청 - OpenAI 호환 형식
     const requestBody = {
-      model: 'qwen3.5-397b-a17b',
+      model: 'qwen3.6-plus',
       messages: [
         {
           role: 'user',
@@ -301,8 +300,7 @@ export async function handleVideoCensorship(file, env) {
           ]
         }
       ],
-      temperature: 0.1,
-      max_tokens: 400
+      "enable_thinking": true
     };
     
     console.log(`[동영상 검열 API 요청] URL: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions`);
