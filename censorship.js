@@ -171,7 +171,7 @@ export async function handleImageCensorship(file, env) {
       "enable_thinking": true
     };
 
-    console.log(`[이미지 검열 API 요청] URL: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions`);
+    console.log(`[이미지 검열 API 요청] URL: https://llm-mdb38qupe0mqpopg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions`);
     console.log(`[이미지 검열 API 요청] 모델: ${requestBody.model}`);
     console.log(`[이미지 검열 API 요청] 이미지 타입: ${mimeType}`);
     console.log(`[이미지 검열 API 요청] Base64 이미지 URL 길이: ${requestBody.messages[0].content[1].image_url.url.length} 문자`);
@@ -303,7 +303,7 @@ export async function handleVideoCensorship(file, env) {
       "enable_thinking": true
     };
     
-    console.log(`[동영상 검열 API 요청] URL: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions`);
+    console.log(`[동영상 검열 API 요청] URL: https://llm-mdb38qupe0mqpopg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions`);
     console.log(`[동영상 검열 API 요청] 모델: ${requestBody.model}`);
     console.log(`[동영상 검열 API 요청] 비디오 타입: ${mimeType}`);
     console.log(`[동영상 검열 API 요청] Base64 비디오 URL 길이: ${requestBody.messages[0].content[1].video_url.url.length} 문자`);
@@ -349,7 +349,7 @@ async function callQwenAPI(apiKey, requestBody) {
   const maxRetries = 3, retryDelay = 2000;
   while (retryCount < maxRetries) {
     try {
-      const apiUrl = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions';
+      const apiUrl = 'https://llm-mdb38qupe0mqpopg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions';
       console.log(`[Qwen API 호출] 시도 ${retryCount + 1}/${maxRetries}`);
       console.log(`[Qwen API 호출] API 키: ${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 4)}`);
       
