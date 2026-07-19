@@ -133,7 +133,7 @@ export async function handleImageCensorship(file, env) {
 
     // 검열 요청 - OpenAI 호환 형식
     const requestBody = {
-      model: 'qwen3.6-plus',
+      model: 'MiniMax-M3',
       messages: [
         {
           role: 'user',
@@ -167,11 +167,10 @@ export async function handleImageCensorship(file, env) {
             }
           ]
         }
-      ],
-      "enable_thinking": true
+      ]
     };
 
-    console.log(`[이미지 검열 API 요청] URL: https://llm-mdb38qupe0mqpopg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions`);
+    console.log(`[이미지 검열 API 요청] URL: https://api.minimax.io/v1/chat/completions`);
     console.log(`[이미지 검열 API 요청] 모델: ${requestBody.model}`);
     console.log(`[이미지 검열 API 요청] 이미지 타입: ${mimeType}`);
     console.log(`[이미지 검열 API 요청] Base64 이미지 URL 길이: ${requestBody.messages[0].content[1].image_url.url.length} 문자`);
@@ -264,7 +263,7 @@ export async function handleVideoCensorship(file, env) {
 
     // 검열 요청 - OpenAI 호환 형식
     const requestBody = {
-      model: 'qwen3.6-plus',
+      model: 'MiniMax-M3',
       messages: [
         {
           role: 'user',
@@ -299,11 +298,10 @@ export async function handleVideoCensorship(file, env) {
             }
           ]
         }
-      ],
-      "enable_thinking": true
+      ]
     };
     
-    console.log(`[동영상 검열 API 요청] URL: https://llm-mdb38qupe0mqpopg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions`);
+    console.log(`[동영상 검열 API 요청] URL: https://api.minimax.io/v1/chat/completions`);
     console.log(`[동영상 검열 API 요청] 모델: ${requestBody.model}`);
     console.log(`[동영상 검열 API 요청] 비디오 타입: ${mimeType}`);
     console.log(`[동영상 검열 API 요청] Base64 비디오 URL 길이: ${requestBody.messages[0].content[1].video_url.url.length} 문자`);
@@ -339,6 +337,24 @@ export async function handleVideoCensorship(file, env) {
 }
 
 /**
+ * 응답 텍스트에서 <think>...</think> 블록 제거
+ * (MiniMax 등 추론 모델이 사고 과정을 <think> 태그로 감싸 반환하는 경우 실제 답변만 추출)
+ * @param {string} text - 원본 응답 텍스트
+ * @returns {string} - think 블록이 제거된 텍스트
+ */
+function stripThinkBlocks(text) {
+  if (!text) return text;
+  // 닫힌 <think>...</think> 블록 모두 제거 (대소문자 무관, 여러 줄 포함)
+  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  // 닫히지 않은 <think> 태그가 남아 있으면(응답이 잘린 경우) 그 지점부터 끝까지 제거
+  const openIdx = cleaned.search(/<think>/i);
+  if (openIdx !== -1) {
+    cleaned = cleaned.slice(0, openIdx);
+  }
+  return cleaned.trim();
+}
+
+/**
  * Qwen API 호출 함수
  * @param {string} apiKey - API 키
  * @param {Object} requestBody - 요청 본문
@@ -349,7 +365,7 @@ async function callQwenAPI(apiKey, requestBody) {
   const maxRetries = 3, retryDelay = 2000;
   while (retryCount < maxRetries) {
     try {
-      const apiUrl = 'https://llm-mdb38qupe0mqpopg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions';
+      const apiUrl = 'https://api.minimax.io/v1/chat/completions';
       console.log(`[Qwen API 호출] 시도 ${retryCount + 1}/${maxRetries}`);
       console.log(`[Qwen API 호출] API 키: ${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 4)}`);
       
@@ -393,7 +409,12 @@ async function callQwenAPI(apiKey, requestBody) {
         return { success: false, error: 'Qwen API에서 유효한 응답을 받지 못했습니다. API 키 또는 요청 형식을 확인해주세요.' };
       }
 
-      const responseText = choice.message.content;
+      // <think>...</think> 추론 블록을 제거하고 실제 답변만 사용
+      const rawText = choice.message.content;
+      const responseText = stripThinkBlocks(rawText);
+      if (rawText.length !== responseText.length) {
+        console.log(`[Qwen API] <think> 블록 제거됨: ${rawText.length}자 → ${responseText.length}자`);
+      }
 
       if (!responseText) {
         console.log('[Qwen API 응답 파싱 실패] 빈 응답');
