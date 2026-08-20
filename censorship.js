@@ -167,7 +167,10 @@ export async function handleImageCensorship(file, env) {
             }
           ]
         }
-      ]
+      ],
+      // MiniMax-M3: thinking 명시 + 응답 잘림 방지용 토큰 상한
+      thinking: { type: 'adaptive' },
+      max_completion_tokens: 8192
     };
 
     console.log(`[이미지 검열 API 요청] URL: https://api.minimax.io/v1/chat/completions`);
@@ -181,12 +184,30 @@ export async function handleImageCensorship(file, env) {
     }
 
     console.log(`[이미지 검열 API 응답] 전체 텍스트:\n${analysis.text}`);
-    
+
+    // MiniMax 자체 세이프티 필터가 감지한 경우 즉시 거부
+    if (analysis.inputSensitive || analysis.outputSensitive) {
+      console.log(`[이미지 검열 완료] MiniMax 세이프티 필터 감지 - 업로드 거부`);
+      return { ok: false, response: new Response(JSON.stringify({
+          success: false, error: '업로드가 거부되었습니다. 부적절한 콘텐츠가 안전 필터에 의해 감지되었습니다.'
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      };
+    }
+
     const bad = isInappropriateContent(analysis.text);
     console.log(`[이미지 검열 판단] 부적절 여부: ${bad.isInappropriate}`);
-    console.log(`[이미지 검열 판단] 검출된 카테고리 수: ${bad.reasons.length}`);
+    console.log(`[이미지 검열 판단] 파싱된 카테고리 수: ${bad.parsedCount}/12`);
     if (bad.reasons.length > 0) {
       console.log(`[이미지 검열 판단] 검출된 카테고리: ${bad.reasons.join(", ")}`);
+    }
+
+    // Fail-closed: 응답을 해석할 수 없으면(거부 응답 포함) 통과시키지 않고 거부
+    if (bad.inconclusive) {
+      console.log(`[이미지 검열 완료] 검열 응답 해석 불가 - 업로드 거부 (fail-closed)`);
+      return { ok: false, response: new Response(JSON.stringify({
+          success: false, error: '검열 결과를 확인할 수 없어 업로드가 거부되었습니다. 다시 시도해주세요.'
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      };
     }
     
     if (bad.isInappropriate) {
@@ -261,6 +282,12 @@ export async function handleVideoCensorship(file, env) {
       console.log(`[동영상 인코딩] 완료 - Base64 길이: ${base64Video.length} 문자`);
     }
 
+    // MiniMax base64 MOV 입력은 video/quicktime 대신 video/mov MIME을 요구함
+    if (mimeType === 'video/quicktime') {
+      console.log(`[동영상 검열] MOV base64 입력용으로 MIME 변환: video/quicktime → video/mov`);
+      mimeType = 'video/mov';
+    }
+
     // 검열 요청 - OpenAI 호환 형식
     const requestBody = {
       model: 'MiniMax-M3',
@@ -298,7 +325,9 @@ export async function handleVideoCensorship(file, env) {
             }
           ]
         }
-      ]
+      ],
+      thinking: { type: 'adaptive' },
+      max_completion_tokens: 8192
     };
     
     console.log(`[동영상 검열 API 요청] URL: https://api.minimax.io/v1/chat/completions`);
@@ -312,12 +341,28 @@ export async function handleVideoCensorship(file, env) {
     }
     
     console.log(`[동영상 검열 API 응답] 전체 텍스트:\n${analysis.text}`);
-    
+
+    // MiniMax 자체 세이프티 필터가 감지한 경우 즉시 거부
+    if (analysis.inputSensitive || analysis.outputSensitive) {
+      console.log(`[동영상 검열 완료] MiniMax 세이프티 필터 감지 - 업로드 거부`);
+      return { ok: false, response: new Response(JSON.stringify({
+          success: false, error: '업로드가 거부되었습니다. 부적절한 콘텐츠가 안전 필터에 의해 감지되었습니다.'
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } }) };
+    }
+
     const bad = isInappropriateContent(analysis.text);
     console.log(`[동영상 검열 판단] 부적절 여부: ${bad.isInappropriate}`);
-    console.log(`[동영상 검열 판단] 검출된 카테고리 수: ${bad.reasons.length}`);
+    console.log(`[동영상 검열 판단] 파싱된 카테고리 수: ${bad.parsedCount}/12`);
     if (bad.reasons.length > 0) {
       console.log(`[동영상 검열 판단] 검출된 카테고리: ${bad.reasons.join(", ")}`);
+    }
+
+    // Fail-closed: 응답을 해석할 수 없으면(거부 응답 포함) 통과시키지 않고 거부
+    if (bad.inconclusive) {
+      console.log(`[동영상 검열 완료] 검열 응답 해석 불가 - 업로드 거부 (fail-closed)`);
+      return { ok: false, response: new Response(JSON.stringify({
+          success: false, error: '검열 결과를 확인할 수 없어 업로드가 거부되었습니다. 다시 시도해주세요.'
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } }) };
     }
     
     if (bad.isInappropriate) {
@@ -421,8 +466,15 @@ async function callQwenAPI(apiKey, requestBody) {
         return { success: false, error: 'Qwen API 응답에서 텍스트를 추출할 수 없습니다.' };
       }
 
+      // MiniMax 자체 세이프티 필터의 입력/출력 감지 여부
+      const inputSensitive = !!data.input_sensitive;
+      const outputSensitive = !!data.output_sensitive;
+      if (inputSensitive || outputSensitive) {
+        console.log(`[Qwen API] MiniMax 세이프티 필터 감지 - input: ${inputSensitive}, output: ${outputSensitive}`);
+      }
+
       console.log(`[Qwen API 성공] 응답 길이: ${responseText.length} 문자`);
-      return { success: true, text: responseText };
+      return { success: true, text: responseText, inputSensitive, outputSensitive };
     } catch (e) {
       retryCount++;
       console.log(`[Qwen API 호출 오류] 재시도 ${retryCount}/${maxRetries}:`, e.message);
@@ -439,13 +491,14 @@ async function callQwenAPI(apiKey, requestBody) {
 
 /**
  * 부적절한 내용 분석 함수 (강화된 버전)
+ * 모델 응답 형식이 달라도(카테고리명 에코, 마크다운, 불릿 등) 번호+true/false를 추출한다.
+ * 하나도 파싱되지 않으면 inconclusive=true를 반환하며, 호출부는 이를 fail-closed로 거부한다.
  * @param {string} responseText - API 응답 텍스트
- * @returns {Object} - 부적절 여부와 이유들
+ * @returns {Object} - { isInappropriate, reasons, parsedCount, inconclusive }
  */
 function isInappropriateContent(responseText) {
   console.log(`[파싱 시작] 응답 텍스트 분석 중...`);
-  
-  // 카테고리 인덱스 → 사용자 표시용 이름 매핑 (한국어)
+
   const categoryMap = {
     1: '성적/노출 콘텐츠',
     2: '부분적 노출/선정적 콘텐츠',
@@ -461,56 +514,51 @@ function isInappropriateContent(responseText) {
     12: '극단주의 콘텐츠'
   };
 
-  // 결과 저장소
-  const flagged = [];
-
-  // 응답을 줄별로 순회하며 다양한 패턴 파싱
+  const results = new Map();
   const lines = responseText.split(/\r?\n/);
-  console.log(`[파싱] 총 ${lines.length}개 줄 분석`);
-  
+
+  // 1차: 줄 시작의 카테고리 번호(1~12) + 같은 줄 어디든 있는 true/false 추출
   lines.forEach((line, lineIndex) => {
-    // 패턴 1: "숫자. true/false" 형태
-    let m = line.match(/^\s*([1-9]|1[0-2])\.\s*(true|false)\b/i);
-    if (!m) {
-      // 패턴 2: "숫자: true/false" 형태
-      m = line.match(/^\s*([1-9]|1[0-2]):\s*(true|false)\b/i);
-    }
-    if (!m) {
-      // 패턴 3: "숫자 - true/false" 형태
-      m = line.match(/^\s*([1-9]|1[0-2])\s*[-–]\s*(true|false)\b/i);
-    }
-    if (!m) {
-      // 패턴 4: "숫자) true/false" 형태
-      m = line.match(/^\s*([1-9]|1[0-2])\)\s*(true|false)\b/i);
-    }
-    if (!m) {
-      // 패턴 5: 단순히 "true" 또는 "false"만 있는 경우 (순서대로 1-12 매핑)
-      const trueMatch = line.match(/^\s*(true|false)\b/i);
-      if (trueMatch) {
-        // 실제 내용이 있는 줄들만 카운트
-        const contentLines = responseText.split(/\r?\n/).filter(l => l.trim().match(/^\s*(true|false)\b/i));
-        const contentLineIndex = contentLines.indexOf(line.trim());
-        if (contentLineIndex >= 0 && contentLineIndex < 12) {
-          m = [null, (contentLineIndex + 1).toString(), trueMatch[1]];
-        }
-      }
-    }
-    
-    if (m) {
-      const idx = Number(m[1]);
-      const val = m[2].toLowerCase() === 'true';
-      console.log(`[파싱] 줄 ${lineIndex + 1}: 카테고리 ${idx} = ${val ? 'TRUE' : 'false'} | "${line.trim()}"`);
-      if (val && categoryMap[idx]) {
-        flagged.push(categoryMap[idx]);
-        console.log(`[파싱] ⚠️ 부적절 카테고리 감지: ${categoryMap[idx]}`);
-      }
-    }
+    // 마크다운 강조(**, __, `)와 리스트 불릿(-, •) 제거 후 매칭
+    const cleaned = line.replace(/[*_`]/g, '').trim().replace(/^[-•▪◦]\s*/, '');
+    const numMatch = cleaned.match(/^(1[0-2]|[1-9])\s*[.):\-–—\]~]?/);
+    if (!numMatch) return;
+    const idx = Number(numMatch[1]);
+    const bools = [...cleaned.matchAll(/\b(true|false)\b/gi)];
+    if (bools.length === 0) return;
+    // 같은 줄에 true/false가 여러 개면 마지막 값을 결론으로 채택
+    const val = bools[bools.length - 1][1].toLowerCase() === 'true';
+    results.set(idx, val);
+    console.log(`[파싱] 줄 ${lineIndex + 1}: 카테고리 ${idx} = ${val ? 'TRUE' : 'false'} | "${line.trim()}"`);
   });
 
-  console.log(`[파싱 완료] 총 ${flagged.length}개 부적절 카테고리 검출`);
-  
+  // 2차 폴백: 번호 없이 true/false만 있는 줄들 → 등장 순서대로 1~12 매핑
+  if (results.size === 0) {
+    const bare = lines
+      .map(l => l.replace(/[*_`]/g, '').trim())
+      .filter(l => /^(true|false)\b/i.test(l));
+    bare.slice(0, 12).forEach((l, i) => {
+      results.set(i + 1, /^true\b/i.test(l));
+    });
+    if (bare.length > 0) {
+      console.log(`[파싱] 번호 없는 true/false 줄 ${bare.length}개를 순서대로 1~12에 매핑`);
+    }
+  }
+
+  const flagged = [];
+  for (const [idx, val] of results) {
+    if (val && categoryMap[idx]) {
+      flagged.push(categoryMap[idx]);
+      console.log(`[파싱] ⚠️ 부적절 카테고리 감지: ${categoryMap[idx]}`);
+    }
+  }
+
+  console.log(`[파싱 완료] ${results.size}/12개 카테고리 파싱, ${flagged.length}개 부적절 검출`);
+
   return {
     isInappropriate: flagged.length > 0,
-    reasons: flagged
+    reasons: flagged,
+    parsedCount: results.size,
+    inconclusive: results.size === 0
   };
 }
