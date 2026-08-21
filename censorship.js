@@ -78,6 +78,45 @@ async function compressFileForCensorship(file, type) {
 }
 
 /**
+ * Workers AI(Moondream)로 이미지 내 텍스트를 OCR 추출
+ * OCR 실패 시에도 검열 흐름을 막지 않도록 null 반환 (fail-open)
+ * @param {Object} env - 환경 변수 (Workers AI 바인딩 env.AI 필요)
+ * @param {string} base64Image - base64 인코딩된 이미지 데이터
+ * @param {string} mimeType - 이미지 MIME 타입
+ * @returns {string|null} - 추출된 텍스트 (텍스트 없음/실패 시 null)
+ */
+async function runOcrWithWorkersAi(env, base64Image, mimeType) {
+  if (!env.AI) {
+    console.log('[OCR] Workers AI 바인딩(env.AI)이 없어 OCR 건너뜀');
+    return null;
+  }
+  try {
+    console.log('[OCR] Moondream OCR 시작');
+    const result = await env.AI.run('@cf/moondream/moondream3.1-9B-A2B', {
+      task: 'query',
+      image: `data:${mimeType};base64,${base64Image}`,
+      question:
+        "Read and transcribe ALL text visible in this image. List every piece of text one per line, exactly as written. " +
+        "Include small, faint, rotated, stylized, partially obscured, or obfuscated text (leetspeak, symbols replacing letters, intentional misspellings), " +
+        "watermarks, UI labels, signs, speech bubbles, and text printed on clothing. Include text in any language. " +
+        "If there is no visible text at all, respond with just: NONE",
+      max_tokens: 2048,
+      stream: false
+    });
+    const answer = (result?.answer || '').trim();
+    if (!answer || /^none$/i.test(answer)) {
+      console.log('[OCR] 추출된 텍스트 없음');
+      return null;
+    }
+    console.log(`[OCR] 텍스트 추출 완료 (${answer.length}자):\n${answer}`);
+    return answer;
+  } catch (e) {
+    console.log(`[OCR] 실패 (검열은 계속 진행): ${e.message}`);
+    return null;
+  }
+}
+
+/**
  * 이미지 검열 - base64 인코딩 사용
  * @param {File} file - 검열할 이미지 파일
  * @param {Object} env - 환경 변수
@@ -131,6 +170,15 @@ export async function handleImageCensorship(file, env) {
       console.log(`[이미지 인코딩] 완료 - Base64 길이: ${base64Image.length} 문자`);
     }
 
+    // Workers AI OCR: 이미지 내 글자를 미리 추출해 검열 프롬프트에 힌트로 제공
+    // (스파스 어텐션 모델이 텍스트를 무시하는 경우를 보완)
+    const ocrText = await runOcrWithWorkersAi(env, base64Image, mimeType);
+    const ocrHint = ocrText
+      ? "A dedicated OCR pre-pass has extracted the following text from this image:\n---\n" + ocrText + "\n---\n" +
+        "Analyze every piece of this extracted text for inappropriate content. " +
+        "Also still examine the image itself carefully, because OCR may have missed or misread some text.\n\n"
+      : "";
+
     // 검열 요청 - OpenAI 호환 형식
     const requestBody = {
       model: 'MiniMax-M3',
@@ -143,7 +191,8 @@ export async function handleImageCensorship(file, env) {
               text:
                 "Analyze this image for inappropriate content. Be extremely strict and thorough. " +
                 "Look for any attempts to bypass detection through noise, partial covering, artistic filters, or text obfuscation. " +
-                "Also analyze any visible text in the image for inappropriate language, including leetspeak, symbols replacing letters, or intentional misspellings. " +
+                "Also analyze any visible text in the image for inappropriate language, including leetspeak, symbols replacing letters, or intentional misspellings.\n\n" +
+                ocrHint +
                 "Rate each category as true (inappropriate) or false (appropriate). Only respond with the number and true/false on each line:\n\n" +
                 "1. Nudity/Sexual content (exposed genitals, sexual acts, suggestive poses): true/false\n" +
                 "2. Partial nudity/Suggestive content (underwear focus, sexual implications, provocative clothing): true/false\n" +
@@ -168,8 +217,8 @@ export async function handleImageCensorship(file, env) {
           ]
         }
       ],
-      // MiniMax-M3: thinking 명시 + 응답 잘림 방지용 토큰 상한
-      thinking: { type: 'adaptive' },
+      // MiniMax-M3: 추론(thinking) 비활성화 + 응답 잘림 방지용 토큰 상한
+      thinking: { type: 'disabled' },
       max_completion_tokens: 8192
     };
 
