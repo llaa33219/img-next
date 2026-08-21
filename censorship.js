@@ -217,8 +217,8 @@ export async function handleImageCensorship(file, env) {
           ]
         }
       ],
-      // MiniMax-M3: 추론(thinking) 비활성화 + 응답 잘림 방지용 토큰 상한
-      thinking: { type: 'disabled' },
+      // MiniMax-M3: thinking 명시 + 응답 잘림 방지용 토큰 상한
+      thinking: { type: 'adaptive' },
       max_completion_tokens: 8192
     };
 
